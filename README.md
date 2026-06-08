@@ -1,7 +1,9 @@
-# MentorX Code
+# MentorX
 
-MentorX tutor veri hatlarını, model eğitim deneylerini ve ExamGuard
-uygulamalarını tek bir kod deposunda toplar.
+Sokratik AI tutor, model eğitim hatları ve akıllı sınav gözetim ekosistemi.
+
+Bu depo MentorX tutor veri hatlarını, model eğitim deneylerini ve ExamGuard
+uygulamalarını tek bir kod tabanında toplar.
 
 SentialX, üretilmiş veri kümeleri, model ağırlıkları, çalışma çıktıları ve
 gerçek ortam anahtarları bu klasörün kapsamında değildir.
@@ -85,4 +87,3 @@ Chrome'un "Paketlenmemiş öğe yükle" ekranından seçin.
 
 `training/train_colab_qlora_sft.py` ve `notebooks/` altındaki çalışmalar GPU
 ortamı, tercihen Colab üzerinde kullanılmak üzere hazırlanmıştır.
-
