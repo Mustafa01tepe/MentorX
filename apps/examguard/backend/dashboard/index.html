@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ExamGuard — Öğretmen Paneli</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+  :root {
+    --bg:      #080c10;
+    --surface: #0d1117;
+    --border:  #1e2530;
+    --accent:  #ef4444;
+    --warn:    #f59e0b;
+    --ok:      #22c55e;
+    --muted:   #4b5563;
+    --text:    #e2e8f0;
+    --dim:     #94a3b8;
+    --purple:  #a855f7;
+    --mono:    'IBM Plex Mono', monospace;
+    --sans:    'IBM Plex Sans', sans-serif;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13px; min-height:100vh; display:flex; flex-direction:column; }
+
+  /* ── Header ── */
+  header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:11px 18px; border-bottom:1px solid var(--border);
+    background:var(--surface); position:sticky; top:0; z-index:100;
+    gap:14px; flex-wrap:wrap;
+  }
+
+  .logo { font-family:var(--mono); font-size:14px; font-weight:600; color:var(--accent); letter-spacing:3px; }
+  .logo span { color:var(--dim); font-weight:400; }
+
+  .exam-control { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .ctrl-label { font-family:var(--mono); font-size:9px; letter-spacing:1px; color:var(--muted); text-transform:uppercase; }
+  select, input[type="number"] {
+    background:var(--bg); border:1px solid var(--border); color:var(--text);
+    font-family:var(--mono); font-size:11px; padding:5px 7px; border-radius:3px; outline:none;
+  }
+  select:focus, input[type="number"]:focus { border-color:var(--accent); }
+  input[type="number"] { width:60px; }
+  .divider { width:1px; height:22px; background:var(--border); }
+
+  .btn { font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:1.5px; padding:6px 12px; border:none; border-radius:3px; cursor:pointer; transition:opacity .15s; }
+  .btn:hover { opacity:.8; }
+  .btn-start  { background:var(--ok); color:#000; }
+  .btn-stop   { background:var(--accent); color:#fff; }
+  .btn-apply  { background:transparent; color:var(--dim); border:1px solid var(--border); }
+  .btn-apply:hover { border-color:var(--warn); color:var(--warn); }
+
+  .exam-badge { font-family:var(--mono); font-size:10px; padding:4px 9px; border-radius:3px; letter-spacing:1px; white-space:nowrap; }
+  .exam-badge.idle    { background:rgba(75,85,99,.15); color:var(--muted); border:1px solid var(--border); }
+  .exam-badge.running { background:rgba(34,197,94,.1); color:var(--ok); border:1px solid rgba(34,197,94,.3); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
+
+  .header-right { display:flex; align-items:center; gap:18px; }
+  .stats { display:flex; gap:14px; }
+  .stat { text-align:center; }
+  .stat-val { font-family:var(--mono); font-size:18px; font-weight:600; line-height:1; }
+  .stat-lbl { font-size:9px; letter-spacing:1px; color:var(--muted); margin-top:2px; }
+  .red { color:var(--accent); } .yellow { color:var(--warn); } .green { color:var(--ok); }
+
+  .conn-badge { font-family:var(--mono); font-size:10px; padding:4px 9px; border-radius:3px; letter-spacing:1px; }
+  .conn-badge.on  { background:rgba(34,197,94,.1); color:var(--ok); border:1px solid rgba(34,197,94,.3); }
+  .conn-badge.off { background:rgba(239,68,68,.1); color:var(--accent); border:1px solid rgba(239,68,68,.3); }
+  .timer { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--warn); letter-spacing:2px; }
+
+  /* ── Layout: 3 sütun ── */
+  .main {
+    display:grid;
+    grid-template-columns: 220px 300px 1fr;
+    flex:1; height:calc(100vh - 53px); overflow:hidden;
+  }
+
+  /* ── Panel ortak ── */
+  .panel { display:flex; flex-direction:column; overflow:hidden; border-right:1px solid var(--border); }
+  .panel-hdr {
+    padding:9px 13px; border-bottom:1px solid var(--border);
+    font-family:var(--mono); font-size:9px; letter-spacing:2px; color:var(--muted);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+
+  /* ── Öğrenci listesi ── */
+  .student-list { flex:1; overflow-y:auto; padding:6px; display:flex; flex-direction:column; gap:4px; }
+  .student-list::-webkit-scrollbar { width:3px; }
+  .student-list::-webkit-scrollbar-thumb { background:var(--border); }
+
+  .student-card {
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:4px; padding:8px 10px;
+    display:flex; align-items:center; gap:8px;
+    animation:fadeIn .2s ease-out;
+  }
+  .student-card.active   { border-left:3px solid var(--ok); }
+  .student-card.idle     { border-left:3px solid var(--warn); opacity:.7; }
+  .student-card.left     { border-left:3px solid var(--muted); opacity:.5; }
+  .student-card.alert-hi { border-left:3px solid var(--accent); }
+
+  .s-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .s-dot.active { background:var(--ok); box-shadow:0 0 5px var(--ok); }
+  .s-dot.idle   { background:var(--warn); }
+  .s-dot.left   { background:var(--muted); }
+
+  .s-info { flex:1; min-width:0; }
+  .s-name { font-size:11px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .s-id   { font-family:var(--mono); font-size:9px; color:var(--muted); }
+
+  .s-badge {
+    font-family:var(--mono); font-size:9px; font-weight:600;
+    padding:2px 6px; border-radius:2px; flex-shrink:0;
+  }
+  .s-badge.zero    { background:rgba(34,197,94,.1); color:var(--ok); }
+  .s-badge.low     { background:rgba(245,158,11,.1); color:var(--warn); }
+  .s-badge.high    { background:rgba(239,68,68,.15); color:var(--accent); }
+
+  /* ── Olay akışı ── */
+  .feed { flex:1; overflow-y:auto; padding:6px; display:flex; flex-direction:column; gap:4px; }
+  .feed::-webkit-scrollbar { width:3px; }
+  .feed::-webkit-scrollbar-thumb { background:var(--border); }
+
+  .card {
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:4px; padding:8px 10px; cursor:pointer;
+    animation:fadeIn .2s ease-out; transition:border-color .15s;
+  }
+  .card:hover { border-color:var(--dim); }
+  .card.selected { border-color:var(--warn); }
+  .card.suspicious { border-left:3px solid var(--warn); }
+  .card.critical   { border-left:3px solid var(--accent); background:rgba(239,68,68,.04); }
+  .card.agent-flag { border-left:3px solid var(--purple); }
+  .card.periodic   { border-left:3px solid var(--muted); }
+  .card.pending    { border-left:3px solid #38bdf8; background:rgba(56,189,248,.06); }
+  .card.uncertain  { border-left:3px solid #f97316; background:rgba(249,115,22,.06); }
+
+  @keyframes fadeIn { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+
+  .card-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px; }
+  .card-reason { font-size:10px; font-weight:500; font-family:var(--mono); }
+  .cr-red    { color:var(--accent); }
+  .cr-purple { color:var(--purple); }
+  .cr-yellow { color:var(--warn); }
+  .cr-gray   { color:var(--muted); }
+  .cr-blue   { color:#38bdf8; }
+  .cr-orange { color:#f97316; }
+  .card-time { font-family:var(--mono); font-size:9px; color:var(--muted); }
+  .card-student { font-size:10px; color:var(--dim); }
+  .card-student strong { color:var(--text); font-weight:500; }
+  .card-url { margin-top:2px; font-family:var(--mono); font-size:9px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  /* ── Detay ── */
+  .detail { display:flex; flex-direction:column; overflow:hidden; border-right:none; }
+  .detail-body { flex:1; overflow:auto; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:18px; gap:12px; }
+
+  .placeholder { text-align:center; color:var(--muted); }
+  .placeholder .ico { font-size:32px; opacity:.3; margin-bottom:8px; }
+  .placeholder p { font-family:var(--mono); font-size:10px; letter-spacing:1px; }
+
+  .detail-ss { max-width:100%; max-height:calc(100vh - 210px); border:1px solid var(--border); border-radius:4px; object-fit:contain; }
+
+  .meta-grid { width:100%; max-width:760px; display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .meta-card { background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:7px 11px; }
+  .meta-card label { font-size:8px; letter-spacing:1px; color:var(--muted); text-transform:uppercase; display:block; margin-bottom:2px; font-family:var(--mono); }
+  .meta-card span { font-size:11px; font-family:var(--mono); color:var(--text); word-break:break-all; }
+
+  .agent-box { width:100%; max-width:760px; background:var(--surface); border:1px solid var(--purple); border-radius:4px; padding:9px 13px; }
+  .agent-box .at { font-family:var(--mono); font-size:9px; letter-spacing:2px; color:var(--purple); margin-bottom:3px; }
+  .agent-box .av { font-family:var(--mono); font-size:12px; font-weight:600; }
+  .av.supheli { color:var(--accent); } .av.temiz { color:var(--ok); }
+  .agent-box .ar { font-size:11px; color:var(--dim); margin-top:2px; }
+
+  /* ── Toast ── */
+  #toasts { position:fixed; top:60px; right:12px; display:flex; flex-direction:column; gap:6px; z-index:999; }
+  .toast { background:var(--surface); border:1px solid var(--accent); border-radius:4px; padding:8px 13px; font-size:11px; font-family:var(--mono); max-width:280px; animation:toastIn .2s ease-out; box-shadow:0 4px 18px rgba(239,68,68,.12); }
+  .toast .tt { color:var(--accent); font-weight:600; margin-bottom:2px; font-size:10px; }
+  .toast .tb { color:var(--dim); font-size:10px; }
+  @keyframes toastIn { from{opacity:0;transform:translateX(14px)} to{opacity:1;transform:translateX(0)} }
+
+  .empty { text-align:center; padding:28px 12px; color:var(--muted); font-family:var(--mono); font-size:10px; letter-spacing:1px; }
+
+  .btn-clear { background:none; border:1px solid var(--border); color:var(--muted); font-family:var(--mono); font-size:9px; padding:2px 7px; border-radius:2px; cursor:pointer; letter-spacing:1px; }
+  .btn-clear:hover { border-color:var(--accent); color:var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">EXAM<span>GUARD</span></div>
+
+  <div class="exam-control">
+    <span class="ctrl-label">SINAV URL</span>
+    <input type="text" id="inpUrl1" placeholder="Sınav giriş URL..." style="width:220px">
+    <input type="text" id="inpUrl2" placeholder="Sınav ekran URL... (opsiyonel)" style="width:220px">
+    <div class="divider"></div>
+    <span class="ctrl-label">SINAV KODU</span>
+    <input type="text" id="inpCode" placeholder="örn: MAT101" style="width:100px;text-transform:uppercase">
+    <div class="divider"></div>
+    <span class="ctrl-label">MOD</span>
+    <select id="selMode">
+      <option value="web">🌐 Web Sınavı</option>
+      <option value="coding">💻 Kodlama</option>
+    </select>
+    <span class="ctrl-label">SÜRE (dk)</span>
+    <input type="number" id="inpDuration" value="90" min="5" max="360">
+    <button class="btn btn-apply" onclick="applyChanges()">UYGULA</button>
+    <div class="divider"></div>
+    <button class="btn btn-start" id="btnStart" onclick="startExam()">▶ BAŞLAT</button>
+    <button class="btn btn-stop"  id="btnStop"  onclick="stopExam()" style="display:none">■ DURDUR</button>
+    <div class="exam-badge idle" id="examBadge">● BEKLİYOR</div>
+    <div class="timer" id="timer" style="display:none">00:00</div>
+  </div>
+
+  <div class="header-right">
+    <div class="stats">
+      <div class="stat"><div class="stat-val red"    id="sAlerts">0</div><div class="stat-lbl">Uyarı</div></div>
+      <div class="stat"><div class="stat-val yellow" id="sSus">0</div><div class="stat-lbl">Şüpheli</div></div>
+      <div class="stat"><div class="stat-val green"  id="sTotal">0</div><div class="stat-lbl">SS</div></div>
+    </div>
+    <div class="conn-badge off" id="connBadge">● YOK</div>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- Öğrenci listesi -->
+  <div class="panel">
+    <div class="panel-hdr">
+      <span>ÖĞRENCİLER</span>
+      <span id="studentCount" style="color:var(--ok);font-size:10px">0</span>
+    </div>
+    <div class="student-list" id="studentList">
+      <div class="empty" id="emptyStudents">Henüz kimse bağlanmadı</div>
+    </div>
+  </div>
+
+  <!-- Olay akışı -->
+  <div class="panel">
+    <div class="panel-hdr">
+      <span>OLAY AKIŞI</span>
+      <button class="btn-clear" onclick="clearFeed()">TEMİZLE</button>
+    </div>
+    <div class="feed" id="feed">
+      <div class="empty" id="emptyFeed">Henüz olay yok...</div>
+    </div>
+  </div>
+
+  <!-- Detay -->
+  <div class="detail">
+    <div class="panel-hdr"><span>DETAY / EKRAN GÖRÜNTÜSÜ</span></div>
+    <div class="detail-body" id="detailBody">
+      <div class="placeholder">
+        <div class="ico">🖥</div>
+        <p>Bir olaya tıklayın</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div id="toasts"></div>
+
+<script>
+let nAlerts=0, nSus=0, nTotal=0;
+let selected=null, examRunning=false;
+let timerInterval=null, elapsed=0;
+let adminAuthenticated=false;
+const eventCards = new Map();
+const countedEvents = new Set();
+
+const savedAdminToken = localStorage.getItem('examguardAdminToken') || '';
+const adminToken = prompt('Öğretmen tokenını girin:', savedAdminToken) || '';
+if (adminToken) localStorage.setItem('examguardAdminToken', adminToken);
+const socket = io({ auth: { adminToken } });
+
+socket.on('connect', () => {
+  document.getElementById('connBadge').textContent = '● BAĞLI';
+  document.getElementById('connBadge').className = 'conn-badge on';
+});
+socket.on('disconnect', () => {
+  document.getElementById('connBadge').textContent = '● YOK';
+  document.getElementById('connBadge').className = 'conn-badge off';
+});
+socket.on('admin_authenticated', () => {
+  adminAuthenticated = true;
+});
+socket.on('admin_error', (data) => {
+  adminAuthenticated = false;
+  alert(data?.message || 'Öğretmen yetkilendirmesi başarısız.');
+});
+socket.on('exam_started', (s) => setExamRunning(true));
+socket.on('exam_stopped', ()  => setExamRunning(false));
+socket.on('state_sync', (s) => syncFromState(s));
+socket.on('mode_changed', (p) => {
+  if (p?.mode) document.getElementById('selMode').value = p.mode;
+});
+socket.on('duration_updated', (p) => {
+  if (typeof p?.duration === 'number') {
+    document.getElementById('inpDuration').value = p.duration;
+  }
+});
+socket.on('urls_updated', (p) => {
+  const urls = Array.isArray(p?.allowed_urls) ? p.allowed_urls : [];
+  document.getElementById('inpUrl1').value = urls[0] || '';
+  document.getElementById('inpUrl2').value = urls[1] || '';
+});
+socket.on('exam_code_updated', (p) => {
+  document.getElementById('inpCode').value = (p?.exam_code || '').toUpperCase();
+});
+
+function syncFromState(s) {
+  if (!s) return;
+  document.getElementById('selMode').value = s.mode || 'web';
+  document.getElementById('inpDuration').value = s.duration || 90;
+  document.getElementById('inpCode').value = (s.exam_code || '').toUpperCase();
+  const urls = Array.isArray(s.allowed_urls) ? s.allowed_urls : [];
+  document.getElementById('inpUrl1').value = urls[0] || '';
+  document.getElementById('inpUrl2').value = urls[1] || '';
+  setExamRunning(!!s.active);
+}
+
+// ── Öğrenci güncellemesi ──
+socket.on('students_update', (list) => renderStudents(list));
+
+function renderStudents(list) {
+  const container = document.getElementById('studentList');
+  document.getElementById('emptyStudents')?.remove();
+
+  // Aktif sayısı
+  const active = list.filter(s => s.status === 'active').length;
+  document.getElementById('studentCount').textContent = `${active}/${list.length}`;
+
+  // Mevcut kartları güncelle veya yeni ekle
+  list.forEach(s => {
+    let card = document.getElementById(`sc-${s.id}`);
+    if (!card) {
+      card = document.createElement('div');
+      card.id = `sc-${s.id}`;
+      container.appendChild(card);
+    }
+
+    const statusCls = s.status === 'active' ? 'active'
+                    : s.status === 'left'   ? 'left' : 'idle';
+    const alertCls  = s.alertCount >= 3 ? 'alert-hi' : '';
+    const badgeCls  = s.alertCount === 0 ? 'zero'
+                    : s.alertCount <= 2  ? 'low' : 'high';
+
+    card.className = `student-card ${statusCls} ${alertCls}`;
+    card.innerHTML = `
+      <div class="s-dot ${statusCls}"></div>
+      <div class="s-info">
+        <div class="s-name">${esc(s.name)}</div>
+        <div class="s-id">${esc(s.id)}</div>
+      </div>
+      <div class="s-badge ${badgeCls}">${s.alertCount}</div>
+    `;
+  });
+}
+
+// ── Olaylar ──
+socket.on('analysis_pending', (data) => {
+  addOrUpdateCard(data, 'pending');
+});
+
+socket.on('alert', (data) => {
+  countFinalEvent(data);
+  const cls = classifyCard(data, true);
+  addOrUpdateCard(data, cls);
+  showToast(data);
+});
+
+socket.on('screenshot', (data) => {
+  countFinalEvent(data);
+  const cls = classifyCard(data, false);
+  addOrUpdateCard(data, cls);
+});
+
+// ── Sınav kontrolü ──
+function getAllowedUrls() {
+  const u1 = document.getElementById("inpUrl1").value.trim();
+  const u2 = document.getElementById("inpUrl2").value.trim();
+  return [...new Set([u1, u2].filter(Boolean))];
+}
+
+function startExam() {
+  if (!requireAdmin()) return;
+  const mode     = document.getElementById('selMode').value;
+  const duration = parseInt(document.getElementById('inpDuration').value) || 90;
+  const allowed_urls = getAllowedUrls();
+  const exam_code = document.getElementById('inpCode').value.trim().toUpperCase();
+  if (!exam_code) {
+    alert('Sınav kodu zorunludur.');
+    return;
+  }
+  socket.emit('start_exam', { mode, duration, allowed_urls, exam_code });
+  setExamRunning(true);
+}
+function stopExam() {
+  if (!requireAdmin()) return;
+  socket.emit('stop_exam', {});
+  setExamRunning(false);
+}
+function applyChanges() {
+  if (!requireAdmin()) return;
+  if (!examRunning) return;
+  const examCode = document.getElementById('inpCode').value.trim().toUpperCase();
+  if (examCode) socket.emit('update_exam_code', { exam_code: examCode });
+  socket.emit('update_urls', { allowed_urls: getAllowedUrls() });
+  socket.emit('update_duration', { duration: parseInt(document.getElementById('inpDuration').value)||90 });
+  socket.emit('change_mode', { mode: document.getElementById('selMode').value });
+}
+function setExamRunning(r) {
+  examRunning = r;
+  document.getElementById('btnStart').style.display = r ? 'none' : '';
+  document.getElementById('btnStop').style.display  = r ? '' : 'none';
+  document.getElementById('timer').style.display    = r ? '' : 'none';
+  const b = document.getElementById('examBadge');
+  if (r) { b.textContent='● AKTİF'; b.className='exam-badge running'; startTimer(); }
+  else   { b.textContent='● BEKLİYOR'; b.className='exam-badge idle'; stopTimer(); }
+}
+function startTimer() {
+  elapsed=0; clearInterval(timerInterval);
+  timerInterval=setInterval(()=>{ elapsed++;
+    document.getElementById('timer').textContent=
+      `${String(Math.floor(elapsed/60)).padStart(2,'0')}:${String(elapsed%60).padStart(2,'0')}`;
+  },1000);
+}
+function stopTimer() { clearInterval(timerInterval); }
+
+function classifyCard(data, isAlertChannel){
+  const status = data.analysisStatus || (isAlertChannel ? 'suspicious' : 'clean');
+  if (status === 'pending') return 'pending';
+  if (status === 'uncertain') return 'uncertain';
+  if (data.type === 'ai_extension_detected') return 'critical';
+  if (status === 'suspicious') {
+    return data.agentVerdict === 'ŞÜPHELİ' ? 'agent-flag' : 'suspicious';
+  }
+  return 'periodic';
+}
+
+function statusText(status){
+  if(status === 'pending') return '⏳ Analiz Bekleniyor';
+  if(status === 'suspicious') return '🚨 Şüpheli';
+  if(status === 'uncertain') return '🟠 Belirsiz';
+  return '✅ Temiz';
+}
+
+function statusClass(cls){
+  if(cls === 'critical') return 'cr-red';
+  if(cls === 'agent-flag') return 'cr-purple';
+  if(cls === 'suspicious') return 'cr-yellow';
+  if(cls === 'pending') return 'cr-blue';
+  if(cls === 'uncertain') return 'cr-orange';
+  return 'cr-gray';
+}
+
+function countFinalEvent(data){
+  const id = data.eventId || `${data.timestamp}-${data.reason}-${data.student?.id||'x'}`;
+  if (countedEvents.has(id)) return;
+  countedEvents.add(id);
+  nTotal++;
+  if (data.analysisStatus === 'suspicious' || data.suspicious) {
+    nAlerts++;
+    nSus++;
+  }
+  updateStats();
+}
+
+// ── Kart ekle / güncelle ──
+function addOrUpdateCard(data, cls) {
+  document.getElementById('emptyFeed')?.remove();
+  const s = data.student || {};
+  const eventId = data.eventId || `${data.timestamp}-${data.reason}-${s.id||'x'}`;
+  let card = eventCards.get(eventId);
+  const isNew = !card;
+  const status = data.analysisStatus || 'clean';
+  const reason = `${statusText(status)} · ${data.reasonLabel||data.reason||'?'}`;
+  const cr = statusClass(cls);
+
+  if (!card) {
+    card = document.createElement('div');
+    card.dataset.eventId = eventId;
+    card.addEventListener('click', () => showDetail(card.__data, card));
+    eventCards.set(eventId, card);
+  }
+
+  card.__data = data;
+  card.className = `card ${cls}`;
+  card.innerHTML = `
+    <div class="card-top">
+      <span class="card-reason ${cr}">${esc(reason)}</span>
+      <span class="card-time">${esc(fmtTime(data.timestamp))}</span>
+    </div>
+    <div class="card-student"><strong>${esc(s.name||'?')}</strong> · ${esc(s.id||'—')}</div>
+    ${data.tabUrl?`<div class="card-url">${esc(data.tabUrl)}</div>`:''}
+  `;
+
+  const feed=document.getElementById('feed');
+  if (isNew) {
+    feed.insertBefore(card, feed.firstChild);
+  } else if (feed.firstChild !== card) {
+    feed.insertBefore(card, feed.firstChild);
+  }
+
+  if (selected === card) {
+    showDetail(data, card);
+  }
+}
+
+// ── Detay ──
+function showDetail(data, card) {
+  if(selected) selected.classList.remove('selected');
+  selected=card; card.classList.add('selected');
+  const s=data.student||{};
+  const body=document.getElementById('detailBody');
+  const isExt=data.type==='ai_extension_detected';
+  if(isExt){
+    const extList=(data.extensions||[]).map(e=>`<div style="padding:3px 0;font-family:var(--mono);font-size:11px;color:var(--accent)">⚠ ${esc(e.blacklistName)} <span style="color:var(--dim)">— ${esc(e.installedName)}</span></div>`).join('');
+    body.innerHTML=`<div style="max-width:580px;width:100%"><div style="font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:2px;margin-bottom:10px">🚨 AI EKLENTİ TESPİTİ</div>${extList}</div><div class="meta-grid">${mc('ÖĞRENCİ',s.name||'—')}${mc('NUMARA',s.id||'—')}${mc('ZAMAN',fmtTime(data.timestamp))}${mc('DURUM',statusText(data.analysisStatus||'suspicious'))}</div>`;
+    return;
+  }
+  const ss=data.screenshot||'';
+  const ctx=data.clientContext||{};
+  const ctxSummary=[ctx.activeProcess, ctx.activeWindowTitle].filter(Boolean).join(' · ');
+  const agHtml=data.agentVerdict?`<div class="agent-box"><div class="at">🤖 AGENT ANALİZİ</div><div class="av ${data.agentVerdict==='ŞÜPHELİ'?'supheli':'temiz'}">${esc(data.agentVerdict)}</div><div class="ar">${esc(data.agentReason||'')}</div></div>`:'';
+  body.innerHTML=`
+    ${ss?`<img class="detail-ss" src="${ss}" alt="SS">`:'<div style="color:var(--muted);font-family:var(--mono);font-size:11px">Görüntü yok</div>'}
+    ${agHtml}
+    <div class="meta-grid">${mc('ÖĞRENCİ',s.name||'—')}${mc('NUMARA',s.id||'—')}${mc('ZAMAN',fmtTime(data.timestamp))}${mc('DURUM',statusText(data.analysisStatus||'clean'))}${mc('OLAY',data.reasonLabel||data.reason||'—')}${mc('MOD',data.mode||'—')}</div>
+    ${ctxSummary?`<div style="font-family:var(--mono);font-size:9px;color:var(--dim);max-width:760px;width:100%">BAĞLAM: ${esc(ctxSummary)}</div>`:''}
+    ${data.routingNote?`<div style="font-family:var(--mono);font-size:9px;color:var(--muted);max-width:760px;width:100%">NOT: ${esc(data.routingNote)}</div>`:''}
+    ${data.tabUrl?`<div style="font-family:var(--mono);font-size:9px;color:var(--muted);max-width:760px;width:100%">URL: ${esc(data.tabUrl)}</div>`:''}
+  `;
+}
+function mc(l,v){return `<div class="meta-card"><label>${esc(l)}</label><span>${esc(v)}</span></div>`;}
+
+// ── Toast ──
+function showToast(data){
+  const s=data.student||{};
+  const isExt=data.type==='ai_extension_detected';
+  const isAg=data.agentVerdict==='ŞÜPHELİ';
+  const title=isExt?'🚨 AI Eklentisi':isAg?'🤖 Agent: Şüpheli':(data.reasonLabel||'⚠️ Uyarı');
+  const t=document.createElement('div');
+  t.className='toast';
+  t.innerHTML=`<div class="tt">${esc(title)}</div><div class="tb">${esc(s.name||'?')} · ${esc(s.id||'—')}</div>`;
+  document.getElementById('toasts').appendChild(t);
+  setTimeout(()=>t.remove(),5000);
+}
+
+function updateStats(){
+  document.getElementById('sAlerts').textContent=nAlerts;
+  document.getElementById('sSus').textContent=nSus;
+  document.getElementById('sTotal').textContent=nTotal;
+}
+function clearFeed(){
+  document.getElementById('feed').innerHTML='<div class="empty" id="emptyFeed">Temizlendi.</div>';
+  eventCards.clear();
+  countedEvents.clear();
+  nAlerts=0; nSus=0; nTotal=0;
+  updateStats();
+  selected=null;
+  document.getElementById('detailBody').innerHTML='<div class="placeholder"><div class="ico">🖥</div><p>Bir olaya tıklayın</p></div>';
+}
+function fmtTime(iso){
+  if(!iso)return'—';
+  return new Date(iso).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  })[ch]);
+}
+function requireAdmin() {
+  if (adminAuthenticated) return true;
+  alert('Geçerli öğretmen tokenı gerekiyor. Sayfayı yenileyip tokenı girin.');
+  return false;
+}
+</script>
+</body>
+</html>

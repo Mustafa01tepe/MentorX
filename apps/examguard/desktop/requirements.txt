@@ -1,0 +1,9 @@
+Pillow
+psutil==6.0.0
+pyautogui==0.9.54
+pystray==0.19.5
+pywin32==306
+python-socketio[client]==5.11.2
+requests
+websocket-client==1.8.0
+
