@@ -243,7 +243,10 @@
   <div class="panel">
     <div class="panel-hdr">
       <span>OLAY AKIŞI</span>
-      <button class="btn-clear" onclick="clearFeed()">TEMİZLE</button>
+      <span>
+        <button class="btn-clear" onclick="loadHistory()">GEÇMİŞ</button>
+        <button class="btn-clear" onclick="clearFeed()">TEMİZLE</button>
+      </span>
     </div>
     <div class="feed" id="feed">
       <div class="empty" id="emptyFeed">Henüz olay yok...</div>
@@ -326,6 +329,7 @@ socket.on('disconnect', () => {
 socket.on('admin_authenticated', () => {
   adminAuthenticated = true;
   updateAdminUi();
+  loadHistory();
 });
 socket.on('admin_error', (data) => {
   adminAuthenticated = false;
@@ -515,6 +519,24 @@ function countFinalEvent(data){
   updateStats();
 }
 
+async function loadHistory(){
+  if (!requireAdmin()) return;
+  try {
+    const response = await fetch('/history?limit=200', {
+      headers: { 'Authorization': `Bearer ${adminToken}` }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    const items = Array.isArray(result.items) ? result.items : [];
+    items.slice().reverse().forEach(data => {
+      countFinalEvent(data);
+      addOrUpdateCard(data, classifyCard(data, data.analysisStatus === 'suspicious'));
+    });
+  } catch (error) {
+    console.error('[ExamGuard] Geçmiş yüklenemedi:', error);
+  }
+}
+
 // ── Kart ekle / güncelle ──
 function addOrUpdateCard(data, cls) {
   document.getElementById('emptyFeed')?.remove();
@@ -557,7 +579,7 @@ function addOrUpdateCard(data, cls) {
 }
 
 // ── Detay ──
-function showDetail(data, card) {
+async function showDetail(data, card) {
   if(selected) selected.classList.remove('selected');
   selected=card; card.classList.add('selected');
   const s=data.student||{};
@@ -568,12 +590,30 @@ function showDetail(data, card) {
     body.innerHTML=`<div style="max-width:580px;width:100%"><div style="font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:2px;margin-bottom:10px">🚨 AI EKLENTİ TESPİTİ</div>${extList}</div><div class="meta-grid">${mc('ÖĞRENCİ',s.name||'—')}${mc('NUMARA',s.id||'—')}${mc('ZAMAN',fmtTime(data.timestamp))}${mc('DURUM',statusText(data.analysisStatus||'suspicious'))}</div>`;
     return;
   }
+  if(data.evidenceId && !data.screenshot && !data.__imageLoading){
+    data.__imageLoading=true;
+    body.innerHTML='<div class="placeholder"><p>Kanıt görüntüsü yükleniyor...</p></div>';
+    try {
+      const response=await fetch(`/history/${encodeURIComponent(data.evidenceId)}/image`,{
+        headers:{'Authorization':`Bearer ${adminToken}`}
+      });
+      if(!response.ok)throw new Error(`HTTP ${response.status}`);
+      data.screenshot=URL.createObjectURL(await response.blob());
+    }catch(error){
+      data.__imageError='Kanıt görüntüsü yüklenemedi.';
+      console.error('[ExamGuard] Kanıt görüntüsü yüklenemedi:',error);
+    }finally{
+      data.__imageLoading=false;
+    }
+    if(selected===card)showDetail(data,card);
+    return;
+  }
   const ss=data.screenshot||'';
   const ctx=data.clientContext||{};
   const ctxSummary=[ctx.activeProcess, ctx.activeWindowTitle].filter(Boolean).join(' · ');
   const agHtml=data.agentVerdict?`<div class="agent-box"><div class="at">🤖 AGENT ANALİZİ</div><div class="av ${data.agentVerdict==='ŞÜPHELİ'?'supheli':'temiz'}">${esc(data.agentVerdict)}</div><div class="ar">${esc(data.agentReason||'')}</div></div>`:'';
   body.innerHTML=`
-    ${ss?`<img class="detail-ss" src="${ss}" alt="SS">`:'<div style="color:var(--muted);font-family:var(--mono);font-size:11px">Görüntü yok</div>'}
+    ${ss?`<img class="detail-ss" src="${ss}" alt="SS">`:`<div style="color:var(--muted);font-family:var(--mono);font-size:11px">${esc(data.__imageError||'Görüntü yok')}</div>`}
     ${agHtml}
     <div class="meta-grid">${mc('ÖĞRENCİ',s.name||'—')}${mc('NUMARA',s.id||'—')}${mc('ZAMAN',fmtTime(data.timestamp))}${mc('DURUM',statusText(data.analysisStatus||'clean'))}${mc('OLAY',data.reasonLabel||data.reason||'—')}${mc('MOD',data.mode||'—')}</div>
     ${ctxSummary?`<div style="font-family:var(--mono);font-size:9px;color:var(--dim);max-width:760px;width:100%">BAĞLAM: ${esc(ctxSummary)}</div>`:''}

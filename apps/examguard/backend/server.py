@@ -2,7 +2,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_socketio import SocketIO, join_room
 from flask_cors import CORS
 import base64, binascii, hashlib, os, re, secrets, threading, uuid
@@ -271,6 +271,41 @@ def increase_alert_count(sid: str):
         persist_state()
         emit_students()
 
+def remove_temporary_screenshot(filepath):
+    try:
+        os.remove(filepath)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f'[ExamGuard] Geçici ekran görüntüsü silinemedi: {exc}')
+
+def finalize_evidence(payload, filepath, mime_type, keep):
+    if not keep:
+        remove_temporary_screenshot(filepath)
+        return
+
+    metadata = {
+        key: value
+        for key, value in payload.items()
+        if key not in ('screenshot', 'filename')
+    }
+    metadata['examId'] = exam_state.get('exam_id')
+    metadata['examStartedAt'] = exam_state.get('started_at')
+    try:
+        with open(filepath, 'rb') as image_file:
+            image = image_file.read()
+        state_store.save_evidence(
+            payload['eventId'],
+            payload.get('timestamp') or now_iso(),
+            metadata,
+            image,
+            mime_type,
+        )
+    except Exception as exc:
+        print(f"[ExamGuard] Kanıt kaydedilemedi ({payload.get('eventId')}): {exc}")
+        return
+    remove_temporary_screenshot(filepath)
+
 def get_text_haystack(*parts):
     return ' '.join([(p or '') for p in parts]).lower()
 
@@ -327,7 +362,7 @@ def decide_routing(reason, mode, tab_url, tab_title, client_ctx):
 
     return {'route': 'require_vlm', 'risk': 'low', 'note': 'Varsayılan VLM doğrulaması'}
 
-def start_analysis_timeout(event_id, payload, sid):
+def start_analysis_timeout(event_id, payload, sid, filepath, mime_type):
     def on_timeout():
         with analysis_registry_lock:
             state = analysis_registry.get(event_id)
@@ -343,6 +378,7 @@ def start_analysis_timeout(event_id, payload, sid):
             'agentReason': 'VLM yanıt süresi aşıldı, manuel inceleme önerilir.',
             'analysisStatus': 'uncertain'
         }
+        finalize_evidence(timeout_payload, filepath, mime_type, keep=True)
         socketio.emit('screenshot', timeout_payload, to='admins')
 
     timer = threading.Timer(ANALYSIS_TIMEOUT_SECONDS, on_timeout)
@@ -486,6 +522,8 @@ def receive_screenshot():
     tab_title  = data.get('tabTitle', '')
     sid        = authenticated_sid
     student['id'] = sid
+    if sid in students:
+        student['name'] = students[sid].get('name', student.get('name', 'Bilinmiyor'))
     mode       = exam_state.get('mode', 'web')
     client_ctx = data.get('clientContext') or {}
     event_id   = data.get('eventId') or str(uuid.uuid4())
@@ -539,6 +577,7 @@ def receive_screenshot():
     }
 
     route = routing.get('route')
+    mime_type = 'image/jpeg' if is_jpeg else 'image/png'
     if route == 'direct_alert':
         increase_alert_count(sid)
         payload = {
@@ -548,6 +587,7 @@ def receive_screenshot():
             'agentReason': routing.get('note'),
             'analysisStatus': 'suspicious'
         }
+        finalize_evidence(payload, filepath, mime_type, keep=True)
         socketio.emit('alert', payload, to='admins')
         return jsonify({'success': True})
 
@@ -559,6 +599,7 @@ def receive_screenshot():
             'agentReason': routing.get('note'),
             'analysisStatus': 'clean'
         }
+        finalize_evidence(payload, filepath, mime_type, keep=False)
         socketio.emit('screenshot', payload, to='admins')
         return jsonify({'success': True})
 
@@ -574,7 +615,7 @@ def receive_screenshot():
     with analysis_registry_lock:
         analysis_registry[event_id] = {'done': False}
 
-    start_analysis_timeout(event_id, base_payload, sid)
+    start_analysis_timeout(event_id, base_payload, sid, filepath, mime_type)
 
     def on_agent_done(result):
         with analysis_registry_lock:
@@ -617,6 +658,12 @@ def receive_screenshot():
             'agentReason': reason_text,
             'analysisStatus': analysis_status
         }
+        finalize_evidence(
+            result_payload,
+            filepath,
+            mime_type,
+            keep=analysis_status in ('suspicious', 'uncertain'),
+        )
         socketio.emit(emit_channel, result_payload, to='admins')
 
     analyze_async(screenshot, mode, on_agent_done, context=client_ctx)
@@ -757,10 +804,40 @@ def health():
         'visionModel': MODEL,
     })
 
+def require_admin_http():
+    supplied = get_bearer_token() or request.headers.get('X-Admin-Token', '')
+    return bool(supplied and secrets.compare_digest(supplied, ADMIN_TOKEN))
+
+@app.route('/history')
+def get_history():
+    if not require_admin_http():
+        return jsonify({'success': False, 'message': 'Yetkisiz erişim.'}), 401
+    try:
+        limit = max(1, min(int(request.args.get('limit', 200)), 1000))
+    except ValueError:
+        limit = 200
+    items = []
+    for row in state_store.list_evidence(limit):
+        metadata = dict(row.get('metadata') or {})
+        metadata['eventId'] = row['eventId']
+        metadata['evidenceId'] = row['eventId']
+        metadata['screenshot'] = ''
+        items.append(metadata)
+    return jsonify({'success': True, 'items': items})
+
+@app.route('/history/<event_id>/image')
+def get_history_image(event_id):
+    if not require_admin_http():
+        return jsonify({'success': False, 'message': 'Yetkisiz erişim.'}), 401
+    evidence = state_store.get_evidence_image(event_id)
+    if not evidence:
+        return jsonify({'success': False, 'message': 'Kanıt bulunamadı.'}), 404
+    image, mime_type = evidence
+    return Response(image, mimetype=mime_type)
+
 @app.route('/screenshots/<path:filename>')
 def serve_screenshot(filename):
-    supplied = get_bearer_token() or request.headers.get('X-Admin-Token', '')
-    if not supplied or not secrets.compare_digest(supplied, ADMIN_TOKEN):
+    if not require_admin_http():
         return jsonify({'success': False, 'message': 'Yetkisiz erişim.'}), 401
     return send_from_directory(SCREENSHOTS_DIR, filename)
 

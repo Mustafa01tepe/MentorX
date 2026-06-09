@@ -28,6 +28,17 @@ class SQLiteStateStore:
             )
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evidence_history (
+                event_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                metadata TEXT NOT NULL,
+                image BLOB NOT NULL,
+                mime_type TEXT NOT NULL
+            )
+            """
+        )
         self._connection.commit()
 
     def load(self):
@@ -63,6 +74,57 @@ class SQLiteStateStore:
     def close(self):
         with self._lock:
             self._connection.close()
+
+    def save_evidence(self, event_id, created_at, metadata, image, mime_type):
+        payload = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+        with self._lock:
+            self._connection.execute(
+                """
+                INSERT INTO evidence_history
+                    (event_id, created_at, metadata, image, mime_type)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    metadata = excluded.metadata,
+                    image = excluded.image,
+                    mime_type = excluded.mime_type
+                """,
+                (event_id, created_at, payload, image, mime_type),
+            )
+            self._connection.commit()
+
+    def list_evidence(self, limit=200):
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT event_id, created_at, metadata, mime_type
+                FROM evidence_history
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 1000)),),
+            ).fetchall()
+        return [
+            {
+                "eventId": row[0],
+                "createdAt": row[1],
+                "metadata": json.loads(row[2]),
+                "mimeType": row[3],
+            }
+            for row in rows
+        ]
+
+    def get_evidence_image(self, event_id):
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT image, mime_type
+                FROM evidence_history
+                WHERE event_id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+        return (row[0], row[1]) if row else None
 
 
 class PostgresStateStore:
@@ -131,6 +193,17 @@ class PostgresStateStore:
                     )
                     """
                 )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS evidence_history (
+                        event_id TEXT PRIMARY KEY,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        metadata JSONB NOT NULL,
+                        image BYTEA NOT NULL,
+                        mime_type TEXT NOT NULL
+                    )
+                    """
+                )
 
         try:
             self._with_retry(initialize)
@@ -171,6 +244,65 @@ class PostgresStateStore:
 
     def close(self):
         return None
+
+    def save_evidence(self, event_id, created_at, metadata, image, mime_type):
+        def save_row():
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO evidence_history
+                        (event_id, created_at, metadata, image, mime_type)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (event_id) DO UPDATE SET
+                        created_at = EXCLUDED.created_at,
+                        metadata = EXCLUDED.metadata,
+                        image = EXCLUDED.image,
+                        mime_type = EXCLUDED.mime_type
+                    """,
+                    (event_id, created_at, self._jsonb(metadata), image, mime_type),
+                )
+
+        self._with_retry(save_row)
+
+    def list_evidence(self, limit=200):
+        safe_limit = max(1, min(int(limit), 1000))
+
+        def load_rows():
+            with self._connect() as connection:
+                return connection.execute(
+                    """
+                    SELECT event_id, created_at, metadata, mime_type
+                    FROM evidence_history
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (safe_limit,),
+                ).fetchall()
+
+        return [
+            {
+                "eventId": row[0],
+                "createdAt": row[1].isoformat(),
+                "metadata": row[2],
+                "mimeType": row[3],
+            }
+            for row in self._with_retry(load_rows)
+        ]
+
+    def get_evidence_image(self, event_id):
+        def load_row():
+            with self._connect() as connection:
+                return connection.execute(
+                    """
+                    SELECT image, mime_type
+                    FROM evidence_history
+                    WHERE event_id = %s
+                    """,
+                    (event_id,),
+                ).fetchone()
+
+        row = self._with_retry(load_row)
+        return (bytes(row[0]), row[1]) if row else None
 
 
 def create_state_store(

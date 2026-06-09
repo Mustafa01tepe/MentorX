@@ -60,6 +60,28 @@ class SQLiteStateStoreTests(unittest.TestCase):
             self.assertEqual(state["students"], {})
             self.assertEqual(state["student_sessions"], {})
 
+    def test_evidence_round_trip_keeps_metadata_and_image(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStateStore(str(Path(temp_dir) / "state.sqlite3"))
+            store.save_evidence(
+                "event-1",
+                "2026-06-09T10:00:00+00:00",
+                {
+                    "student": {"id": "42", "name": "Ada"},
+                    "analysisStatus": "suspicious",
+                },
+                b"\xff\xd8\xfftest-image",
+                "image/jpeg",
+            )
+
+            rows = store.list_evidence()
+            image = store.get_evidence_image("event-1")
+            store.close()
+
+            self.assertEqual(rows[0]["eventId"], "event-1")
+            self.assertEqual(rows[0]["metadata"]["student"]["name"], "Ada")
+            self.assertEqual(image, (b"\xff\xd8\xfftest-image", "image/jpeg"))
+
     def test_factory_forwards_postgres_retry_settings(self):
         import state_store
 
