@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 
 
 def build_payload(exam_state, students, student_sessions):
@@ -65,7 +66,7 @@ class SQLiteStateStore:
 
 
 class PostgresStateStore:
-    def __init__(self, database_url):
+    def __init__(self, database_url, connect_attempts=8, retry_delay=2):
         try:
             import psycopg
             from psycopg.types.json import Jsonb
@@ -77,22 +78,42 @@ class PostgresStateStore:
         self.database_url = database_url
         self._psycopg = psycopg
         self._jsonb = Jsonb
+        self.connect_attempts = max(1, int(connect_attempts))
+        self.retry_delay = max(0, float(retry_delay))
         self._initialize()
 
     def _connect(self):
         return self._psycopg.connect(self.database_url, autocommit=True)
 
     def _initialize(self):
-        with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS app_state (
-                    id SMALLINT PRIMARY KEY CHECK (id = 1),
-                    payload JSONB NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        last_error = None
+        for attempt in range(1, self.connect_attempts + 1):
+            try:
+                with self._connect() as connection:
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS app_state (
+                            id SMALLINT PRIMARY KEY CHECK (id = 1),
+                            payload JSONB NOT NULL,
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        )
+                        """
+                    )
+                return
+            except self._psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt == self.connect_attempts:
+                    break
+                print(
+                    '[ExamGuard] PostgreSQL henüz hazır değil; '
+                    f'{attempt}/{self.connect_attempts} bağlantı denemesi başarısız.'
                 )
-                """
-            )
+                time.sleep(self.retry_delay)
+
+        raise RuntimeError(
+            'PostgreSQL bağlantısı kurulamadı. Railway DATABASE_URL değişkeninin '
+            'PostgreSQL servisine referans verdiğini kontrol edin.'
+        ) from last_error
 
     def load(self):
         with self._connect() as connection:
@@ -120,7 +141,16 @@ class PostgresStateStore:
         return None
 
 
-def create_state_store(database_url="", sqlite_path="examguard_state.sqlite3"):
+def create_state_store(
+    database_url="",
+    sqlite_path="examguard_state.sqlite3",
+    connect_attempts=8,
+    retry_delay=2,
+):
     if database_url:
-        return PostgresStateStore(database_url)
+        return PostgresStateStore(
+            database_url,
+            connect_attempts=connect_attempts,
+            retry_delay=retry_delay,
+        )
     return SQLiteStateStore(sqlite_path)

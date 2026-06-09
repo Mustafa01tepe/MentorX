@@ -86,6 +86,10 @@ durum yapısı şu an birden fazla worker için tasarlanmamıştır.
 PostgreSQL servisinizin adı `Postgres` değilse süslü parantez içindeki adı
 Railway'de görünen servis adıyla değiştirin.
 
+`DATABASE_URL` değerini elle `monitoragent.railway.internal` gibi uygulama
+servisinin adresiyle oluşturmayın. Değişken mutlaka PostgreSQL servisinin
+`DATABASE_URL` değişkenine referans vermelidir.
+
 Backend ilk açılışta `app_state` tablosunu otomatik oluşturur. Manuel SQL
 çalıştırmanız gerekmez.
 
@@ -95,6 +99,8 @@ Backend servisinin `Variables` bölümüne aşağıdaki değişkenleri ekleyin:
 
 ```text
 DATABASE_URL=${{Postgres.DATABASE_URL}}
+DATABASE_CONNECT_ATTEMPTS=8
+DATABASE_RETRY_DELAY_SECONDS=2
 SECRET_KEY=GUCLU_RASTGELE_DEGER
 ADMIN_TOKEN=GUCLU_OGRETMEN_TOKENI
 GROQ_API_KEY=GROQ_ANAHTARINIZ

@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -58,6 +59,26 @@ class SQLiteStateStoreTests(unittest.TestCase):
             self.assertFalse(state["exam_state"]["active"])
             self.assertEqual(state["students"], {})
             self.assertEqual(state["student_sessions"], {})
+
+    def test_factory_forwards_postgres_retry_settings(self):
+        import state_store
+
+        sentinel = object()
+        with patch.object(
+            state_store, "PostgresStateStore", return_value=sentinel
+        ) as postgres_store:
+            result = create_state_store(
+                database_url="postgresql://example",
+                connect_attempts=5,
+                retry_delay=1.5,
+            )
+
+        self.assertIs(result, sentinel)
+        postgres_store.assert_called_once_with(
+            "postgresql://example",
+            connect_attempts=5,
+            retry_delay=1.5,
+        )
 
 
 if __name__ == "__main__":

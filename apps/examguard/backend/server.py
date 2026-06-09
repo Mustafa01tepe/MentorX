@@ -64,7 +64,9 @@ STATE_DB_PATH = os.environ.get(
 DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
 state_store = create_state_store(
     database_url=DATABASE_URL,
-    sqlite_path=STATE_DB_PATH
+    sqlite_path=STATE_DB_PATH,
+    connect_attempts=os.environ.get('DATABASE_CONNECT_ATTEMPTS', '8'),
+    retry_delay=os.environ.get('DATABASE_RETRY_DELAY_SECONDS', '2')
 )
 print(
     '[ExamGuard] Durum deposu: '
