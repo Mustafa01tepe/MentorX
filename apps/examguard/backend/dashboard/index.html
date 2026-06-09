@@ -221,6 +221,7 @@
       <div class="stat"><div class="stat-val yellow" id="sSus">0</div><div class="stat-lbl">Şüpheli</div></div>
       <div class="stat"><div class="stat-val green"  id="sTotal">0</div><div class="stat-lbl">SS</div></div>
     </div>
+    <button class="btn btn-apply" id="btnToken" onclick="requestAdminToken()">TOKEN</button>
     <div class="conn-badge off" id="connBadge">● YOK</div>
   </div>
 </header>
@@ -272,10 +273,42 @@ let adminAuthenticated=false;
 const eventCards = new Map();
 const countedEvents = new Set();
 
-const savedAdminToken = localStorage.getItem('examguardAdminToken') || '';
-const adminToken = prompt('Öğretmen tokenını girin:', savedAdminToken) || '';
-if (adminToken) localStorage.setItem('examguardAdminToken', adminToken);
-const socket = io({ auth: { adminToken } });
+let adminToken = localStorage.getItem('examguardAdminToken') || '';
+const socket = io({
+  autoConnect: false,
+  auth: { adminToken }
+});
+
+function requestAdminToken(message = 'Öğretmen tokenını girin:') {
+  const entered = prompt(message, adminToken);
+  if (entered === null) return false;
+
+  const nextToken = entered.trim();
+  if (!nextToken) {
+    localStorage.removeItem('examguardAdminToken');
+    adminToken = '';
+    adminAuthenticated = false;
+    updateAdminUi();
+    return false;
+  }
+
+  adminToken = nextToken;
+  localStorage.setItem('examguardAdminToken', adminToken);
+  adminAuthenticated = false;
+  socket.auth = { adminToken };
+  updateAdminUi();
+
+  if (socket.connected) socket.disconnect();
+  socket.connect();
+  return true;
+}
+
+function updateAdminUi() {
+  const button = document.getElementById('btnToken');
+  button.textContent = adminAuthenticated ? 'TOKEN ✓' : 'TOKEN';
+  button.style.color = adminAuthenticated ? 'var(--ok)' : '';
+  button.style.borderColor = adminAuthenticated ? 'var(--ok)' : '';
+}
 
 socket.on('connect', () => {
   document.getElementById('connBadge').textContent = '● BAĞLI';
@@ -287,11 +320,20 @@ socket.on('disconnect', () => {
 });
 socket.on('admin_authenticated', () => {
   adminAuthenticated = true;
+  updateAdminUi();
 });
 socket.on('admin_error', (data) => {
   adminAuthenticated = false;
-  alert(data?.message || 'Öğretmen yetkilendirmesi başarısız.');
+  updateAdminUi();
+  const message = data?.message || 'Öğretmen yetkilendirmesi başarısız.';
+  setTimeout(() => {
+    requestAdminToken(`${message}\n\nYeni öğretmen tokenını girin:`);
+  }, 0);
 });
+
+if (adminToken) socket.connect();
+else requestAdminToken();
+
 socket.on('exam_started', (s) => setExamRunning(true));
 socket.on('exam_stopped', ()  => setExamRunning(false));
 socket.on('state_sync', (s) => syncFromState(s));
@@ -576,7 +618,7 @@ function esc(value) {
 }
 function requireAdmin() {
   if (adminAuthenticated) return true;
-  alert('Geçerli öğretmen tokenı gerekiyor. Sayfayı yenileyip tokenı girin.');
+  requestAdminToken('Geçerli öğretmen tokenı gerekiyor.\n\nÖğretmen tokenını girin:');
   return false;
 }
 </script>
