@@ -47,6 +47,7 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_REQUEST_BYTES
 # ── Sınav durumu ──
 exam_state = {
     'active':       False,
+    'exam_id':      None,
     'mode':         'web',
     'duration':     90,
     'started_at':   None,
@@ -338,6 +339,21 @@ def student_heartbeat():
         emit_students()
     return jsonify({'success': True})
 
+@app.route('/student/session', methods=['GET'])
+def student_session_status():
+    sid = authenticated_student({})
+    if not sid:
+        return jsonify({
+            'success': False,
+            'message': 'Geçersiz öğrenci oturumu.'
+        }), 401
+    return jsonify({
+        'success': True,
+        'studentId': sid,
+        'examId': exam_state.get('exam_id'),
+        'examActive': bool(exam_state.get('active')),
+    })
+
 # ─────────────────────────────────────────
 # ÖĞRENCİ DOĞRULAMA
 # ─────────────────────────────────────────
@@ -387,7 +403,11 @@ def student_verify():
     persist_state()
     emit_students()
     print(f'[+] Doğrulandı: {name} ({sid})')
-    return jsonify({'success': True, 'sessionToken': session_token})
+    return jsonify({
+        'success': True,
+        'sessionToken': session_token,
+        'examId': exam_state.get('exam_id'),
+    })
 
 
 # ─────────────────────────────────────────
@@ -585,6 +605,7 @@ def handle_start_exam(data):
 
     exam_state.update({
         'active':       True,
+        'exam_id':      str(uuid.uuid4()),
         'mode':         data.get('mode', 'web'),
         'duration':     data.get('duration', 90),
         'started_at':   now_iso(),

@@ -4,6 +4,14 @@ let timerInterval = null;
 let currentState = null;
 const BACKEND_URL = 'https://monitoragent-production.up.railway.app';
 
+function updateSyncStatus(status) {
+  const syncMsg = document.getElementById('syncMsg');
+  syncMsg.textContent = status?.backendConnected
+    ? 'Backend senkronize'
+    : (status?.lastSyncError || 'Backend bağlantısı yok');
+  syncMsg.className = status?.backendConnected ? 'sync-msg ok' : 'sync-msg error';
+}
+
 function updateUI(state) {
   currentState = state;
   const dot        = document.getElementById('dot');
@@ -20,6 +28,7 @@ function updateUI(state) {
       loginForm.style.display = loggedIn ? 'none' : 'block';
       idleMsg.style.display = loggedIn ? 'none' : 'block';
       idleMsg.textContent = loggedIn ? '' : 'Öğrenci girişi gerekli';
+      updateSyncStatus(status);
     });
     dot.className        = 'dot active';
     statusText.className = 'status-text active';
@@ -93,7 +102,8 @@ document.getElementById('loginButton').addEventListener('click', async () => {
       mode: currentState?.mode || 'web',
       allowed_urls: currentState?.allowed_urls || [],
       student: { name, id },
-      sessionToken: data.sessionToken
+      sessionToken: data.sessionToken,
+      examId: data.examId
     }, (result) => {
       if (chrome.runtime.lastError) {
         error.textContent = chrome.runtime.lastError.message;
@@ -110,7 +120,19 @@ document.getElementById('loginButton').addEventListener('click', async () => {
   }
 });
 
-fetch(`${BACKEND_URL}/state`)
-  .then(r => r.json())
-  .then(updateUI)
-  .catch(() => updateUI(null));
+chrome.runtime.sendMessage({ type: 'SYNC_NOW' }, (status) => {
+  if (!chrome.runtime.lastError) updateSyncStatus(status);
+  fetch(`${BACKEND_URL}/state`)
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(updateUI)
+    .catch(() => {
+      updateUI(null);
+      updateSyncStatus({
+        backendConnected: false,
+        lastSyncError: 'Backend bağlantısı yok'
+      });
+    });
+});

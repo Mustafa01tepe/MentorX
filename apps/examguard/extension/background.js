@@ -2,7 +2,7 @@
 
 const BACKEND_URL = 'https://monitoragent-production.up.railway.app';
 const SCREENSHOT_INTERVAL_SECONDS = 30;
-const STATE_CHECK_INTERVAL_SECONDS = 10;
+const STATE_CHECK_INTERVAL_SECONDS = 30;
 const UNFOCUS_CAPTURE_COOLDOWN_MS = 7000;
 
 // Hoca dashboard'dan gönderir, başlangıçta boş
@@ -10,8 +10,11 @@ let allowedUrls = [];
 let examActive  = false;
 let studentInfo = null;
 let sessionToken = null;
+let examId       = null;
 let examMode    = 'web';
 let lastUnfocusCaptureAt = 0;
+let backendConnected = false;
+let lastSyncError = '';
 
 const AI_EXTENSION_BLACKLIST = [
   { id: 'camppjleccjaphfdbohjdohecfnoikec', name: 'Merlin AI' },
@@ -78,12 +81,46 @@ async function enforceOpenTabs() {
 async function initializeGuard() {
   ensureStateCheckAlarm();
   const stored = await chrome.storage.local.get([
-    'examActive', 'studentInfo', 'sessionToken'
+    'examActive', 'studentInfo', 'sessionToken', 'examId'
   ]);
   examActive = !!stored.examActive;
   studentInfo = stored.studentInfo || null;
   sessionToken = stored.sessionToken || null;
+  examId = stored.examId || null;
   await checkExamState();
+}
+
+async function clearLocalSession() {
+  examActive = false;
+  studentInfo = null;
+  sessionToken = null;
+  examId = null;
+  allowedUrls = [];
+  lastUnfocusCaptureAt = 0;
+  await chrome.storage.local.set({
+    examActive: false,
+    studentInfo: null,
+    sessionToken: null,
+    examId: null
+  });
+  await chrome.alarms.clear('periodicScreenshot');
+  await chrome.alarms.clear('heartbeat');
+  ensureStateCheckAlarm();
+}
+
+async function validateStudentSession(expectedExamId) {
+  if (!studentInfo || !sessionToken) return false;
+  const response = await fetch(`${BACKEND_URL}/student/session`, {
+    headers: { 'Authorization': `Bearer ${sessionToken}` }
+  });
+  if (!response.ok) return false;
+  const status = await response.json();
+  return (
+    status.success === true &&
+    status.examActive === true &&
+    status.examId === expectedExamId &&
+    status.studentId === studentInfo.id
+  );
 }
 
 // ─────────────────────────────────────────
@@ -92,48 +129,61 @@ async function initializeGuard() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'START_EXAM') {
-    examActive   = true;
-    examMode     = message.mode || 'web';
-    allowedUrls  = message.allowed_urls || [];
-    studentInfo  = message.student;
-    sessionToken = message.sessionToken;
-    chrome.storage.local.set({
-      examActive: true,
-      studentInfo: message.student,
-      sessionToken
-    });
+    (async () => {
+      examActive   = true;
+      examMode     = message.mode || 'web';
+      allowedUrls  = message.allowed_urls || [];
+      studentInfo  = message.student;
+      sessionToken = message.sessionToken;
+      examId       = message.examId;
+      await chrome.storage.local.set({
+        examActive: true,
+        studentInfo: message.student,
+        sessionToken,
+        examId
+      });
 
-    chrome.alarms.clearAll();
-    ensureExamAlarms();
-    ensureStateCheckAlarm();
+      await chrome.alarms.clearAll();
+      ensureExamAlarms();
+      ensureStateCheckAlarm();
 
-    scanAIExtensions();
-    studentJoin(message.student);
-    activateContentGuards();
-    captureAndSend('periodic', 'Sınav girişi ilk kontrol');
-    enforceOpenTabs();
-    sendResponse({ success: true });
+      const joined = await studentJoin(message.student);
+      if (!joined) return { success: false };
+
+      await scanAIExtensions();
+      await activateContentGuards();
+      await captureAndSend('periodic', 'Sınav girişi ilk kontrol');
+      await enforceOpenTabs();
+      return { success: true };
+    })()
+      .then(sendResponse)
+      .catch((error) => {
+        console.error('[ExamGuard] Start session error:', error);
+        sendResponse({ success: false, message: error?.message });
+      });
   }
 
   if (message.type === 'STOP_EXAM') {
     studentLeave(studentInfo);
-    examActive  = false;
-    studentInfo = null;
-    sessionToken = null;
-    allowedUrls = [];
-    lastUnfocusCaptureAt = 0;
     chrome.alarms.clearAll();
-    ensureStateCheckAlarm();
-    chrome.storage.local.set({
-      examActive: false,
-      studentInfo: null,
-      sessionToken: null
-    });
+    clearLocalSession();
     sendResponse({ success: true });
   }
 
   if (message.type === 'GET_STATUS') {
-    sendResponse({ examActive, studentInfo, sessionToken, examMode, allowedUrls });
+    sendResponse({
+      examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
+      backendConnected, lastSyncError
+    });
+  }
+
+  if (message.type === 'SYNC_NOW') {
+    checkExamState().then(() => {
+      sendResponse({
+        examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
+        backendConnected, lastSyncError
+      });
+    });
   }
 
   // Dashboard'dan URL güncellemesi gelirse
@@ -176,24 +226,15 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 async function checkExamState() {
   try {
     const res  = await fetch(`${BACKEND_URL}/state`);
+    if (!res.ok) throw new Error(`State HTTP ${res.status}`);
     const data = await res.json();
+    backendConnected = true;
+    lastSyncError = '';
 
     // Backend'de aktif sınav yoksa local state'i netleştir
     if (!data.active) {
       const wasActive = examActive;
-      examActive  = false;
-      studentInfo = null;
-      sessionToken = null;
-      allowedUrls = [];
-      lastUnfocusCaptureAt = 0;
-      chrome.storage.local.set({
-        examActive: false,
-        studentInfo: null,
-        sessionToken: null
-      });
-      chrome.alarms.clear('periodicScreenshot');
-      chrome.alarms.clear('heartbeat');
-      ensureStateCheckAlarm();
+      await clearLocalSession();
 
       // Aktif sınavdan pasife düştüyse bitiş popup'u göster
       if (wasActive) {
@@ -209,19 +250,33 @@ async function checkExamState() {
       return;
     }
 
+    const remoteExamId = data.exam_id || null;
+    examMode = data.mode || 'web';
+    allowedUrls = data.allowed_urls || [];
+
+    if (examId && remoteExamId && examId !== remoteExamId) {
+      await clearLocalSession();
+      return;
+    }
+
+    if (sessionToken) {
+      const sessionValid = await validateStudentSession(remoteExamId);
+      if (!sessionValid) {
+        await clearLocalSession();
+        return;
+      }
+    }
+
     // Backend başladı, mod veya URL değiştiyse güncelle
     if (data.active && examActive) {
-      examMode    = data.mode         || examMode;
-      allowedUrls = data.allowed_urls || allowedUrls;
       ensureExamAlarms();
     }
 
     // Sınav yeni başladıysa (extension henüz aktif değil)
     if (data.active && !examActive && studentInfo && sessionToken) {
       examActive  = true;
-      examMode    = data.mode || 'web';
-      allowedUrls = data.allowed_urls || [];
-      chrome.storage.local.set({ examActive: true });
+      examId = remoteExamId;
+      chrome.storage.local.set({ examActive: true, examId });
       ensureExamAlarms();
       scanAIExtensions();
       activateContentGuards();
@@ -229,7 +284,11 @@ async function checkExamState() {
       enforceOpenTabs();
     }
 
-  } catch (e) { /* backend kapalı, sorun değil */ }
+  } catch (e) {
+    backendConnected = false;
+    lastSyncError = e?.message || 'Backend bağlantısı kurulamadı.';
+    console.error('[ExamGuard] State sync error:', e);
+  }
 }
 
 // ─────────────────────────────────────────
@@ -427,6 +486,7 @@ async function captureAndSend(reason, details = '') {
     });
     if (!response.ok) {
       const body = await response.text();
+      if (response.status === 401) await clearLocalSession();
       throw new Error(`Screenshot HTTP ${response.status}: ${body}`);
     }
   } catch (err) {
@@ -439,7 +499,7 @@ async function captureAndSend(reason, details = '') {
 // ─────────────────────────────────────────
 async function studentJoin(student) {
   try {
-    await fetch(`${BACKEND_URL}/student/join`, {
+    const response = await fetch(`${BACKEND_URL}/student/join`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -447,7 +507,13 @@ async function studentJoin(student) {
       },
       body: JSON.stringify({ student, timestamp: new Date().toISOString() })
     });
-  } catch (e) { console.error('[ExamGuard] Join error:', e); }
+    if (response.status === 401) await clearLocalSession();
+    if (!response.ok) throw new Error(`Join HTTP ${response.status}`);
+    return true;
+  } catch (e) {
+    console.error('[ExamGuard] Join error:', e);
+    return false;
+  }
 }
 
 async function studentLeave(student) {
@@ -467,7 +533,7 @@ async function studentLeave(student) {
 async function sendHeartbeat() {
   if (!studentInfo) return;
   try {
-    await fetch(`${BACKEND_URL}/student/heartbeat`, {
+    const response = await fetch(`${BACKEND_URL}/student/heartbeat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -475,6 +541,8 @@ async function sendHeartbeat() {
       },
       body: JSON.stringify({ student: studentInfo, timestamp: new Date().toISOString() })
     });
+    if (response.status === 401) await clearLocalSession();
+    if (!response.ok) throw new Error(`Heartbeat HTTP ${response.status}`);
   } catch (e) { console.error('[ExamGuard] Heartbeat error:', e); }
 }
 
