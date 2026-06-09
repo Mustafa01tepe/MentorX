@@ -93,17 +93,30 @@ class SQLiteStateStore:
             )
             self._connection.commit()
 
-    def list_evidence(self, limit=200):
+    def list_evidence(self, limit=200, exam_id=None):
+        safe_limit = max(1, min(int(limit), 1000))
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT event_id, created_at, metadata, mime_type
-                FROM evidence_history
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (max(1, min(int(limit), 1000)),),
-            ).fetchall()
+            if exam_id is None:
+                rows = self._connection.execute(
+                    """
+                    SELECT event_id, created_at, metadata, mime_type
+                    FROM evidence_history
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (safe_limit,),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    """
+                    SELECT event_id, created_at, metadata, mime_type
+                    FROM evidence_history
+                    WHERE json_extract(metadata, '$.examId') = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (exam_id, safe_limit),
+                ).fetchall()
         return [
             {
                 "eventId": row[0],
@@ -125,6 +138,26 @@ class SQLiteStateStore:
                 (event_id,),
             ).fetchone()
         return (row[0], row[1]) if row else None
+
+    def get_evidence(self, event_id):
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT event_id, created_at, metadata, image, mime_type
+                FROM evidence_history
+                WHERE event_id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "eventId": row[0],
+            "createdAt": row[1],
+            "metadata": json.loads(row[2]),
+            "image": row[3],
+            "mimeType": row[4],
+        }
 
 
 class PostgresStateStore:
@@ -264,11 +297,22 @@ class PostgresStateStore:
 
         self._with_retry(save_row)
 
-    def list_evidence(self, limit=200):
+    def list_evidence(self, limit=200, exam_id=None):
         safe_limit = max(1, min(int(limit), 1000))
 
         def load_rows():
             with self._connect() as connection:
+                if exam_id is not None:
+                    return connection.execute(
+                        """
+                        SELECT event_id, created_at, metadata, mime_type
+                        FROM evidence_history
+                        WHERE metadata ->> 'examId' = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (exam_id, safe_limit),
+                    ).fetchall()
                 return connection.execute(
                     """
                     SELECT event_id, created_at, metadata, mime_type
@@ -303,6 +347,29 @@ class PostgresStateStore:
 
         row = self._with_retry(load_row)
         return (bytes(row[0]), row[1]) if row else None
+
+    def get_evidence(self, event_id):
+        def load_row():
+            with self._connect() as connection:
+                return connection.execute(
+                    """
+                    SELECT event_id, created_at, metadata, image, mime_type
+                    FROM evidence_history
+                    WHERE event_id = %s
+                    """,
+                    (event_id,),
+                ).fetchone()
+
+        row = self._with_retry(load_row)
+        if not row:
+            return None
+        return {
+            "eventId": row[0],
+            "createdAt": row[1].isoformat(),
+            "metadata": row[2],
+            "image": bytes(row[3]),
+            "mimeType": row[4],
+        }
 
 
 def create_state_store(

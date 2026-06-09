@@ -76,11 +76,37 @@ class SQLiteStateStoreTests(unittest.TestCase):
 
             rows = store.list_evidence()
             image = store.get_evidence_image("event-1")
+            evidence = store.get_evidence("event-1")
             store.close()
 
             self.assertEqual(rows[0]["eventId"], "event-1")
             self.assertEqual(rows[0]["metadata"]["student"]["name"], "Ada")
             self.assertEqual(image, (b"\xff\xd8\xfftest-image", "image/jpeg"))
+            self.assertEqual(evidence["eventId"], "event-1")
+            self.assertEqual(evidence["image"], b"\xff\xd8\xfftest-image")
+
+    def test_evidence_can_be_filtered_by_exam_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStateStore(str(Path(temp_dir) / "state.sqlite3"))
+            store.save_evidence(
+                "event-1",
+                "2026-06-09T10:00:00+00:00",
+                {"examId": "exam-a"},
+                b"\xff\xd8\xffone",
+                "image/jpeg",
+            )
+            store.save_evidence(
+                "event-2",
+                "2026-06-09T11:00:00+00:00",
+                {"examId": "exam-b"},
+                b"\xff\xd8\xfftwo",
+                "image/jpeg",
+            )
+
+            rows = store.list_evidence(exam_id="exam-a")
+            store.close()
+
+            self.assertEqual([row["eventId"] for row in rows], ["event-1"])
 
     def test_factory_forwards_postgres_retry_settings(self):
         import state_store

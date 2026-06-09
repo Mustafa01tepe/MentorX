@@ -75,9 +75,11 @@
 
     // ── Sayfa görünürlük değişimi ──
     document.addEventListener('visibilitychange', () => {
-      if (globalThis.__examGuardActive && document.hidden) {
-        chrome.runtime.sendMessage({ type: 'PAGE_HIDDEN' });
-      }
+      if (!globalThis.__examGuardActive) return;
+      chrome.runtime.sendMessage({
+        type: 'PAGE_VISIBILITY_CHANGED',
+        hidden: document.hidden
+      });
     });
 
     console.log('[ExamGuard] Aktif — bu sayfa korunuyor');

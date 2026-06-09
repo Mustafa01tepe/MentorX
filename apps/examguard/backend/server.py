@@ -5,7 +5,9 @@ load_dotenv()
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_socketio import SocketIO, join_room
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 import base64, binascii, hashlib, os, re, secrets, threading, uuid
+import io, json, zipfile
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from agent import GROQ_API_KEY, MODEL, analyze_async
@@ -13,6 +15,7 @@ from policy import record_coding_vote, resolve_student_session
 from state_store import create_state_store
 
 app = Flask(__name__, static_folder='dashboard')
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_urlsafe(32)
 CORS(app, resources={r"/*": {"origins": [
     "http://localhost:5000",
@@ -73,6 +76,16 @@ STATE_DB_PATH = os.environ.get(
 )
 DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
 DATABASE_ERROR = ''
+IS_RAILWAY = bool(
+    os.environ.get('RAILWAY_ENVIRONMENT')
+    or os.environ.get('RAILWAY_PROJECT_ID')
+)
+PERSISTENCE_WARNING = (
+    'Railway üzerinde DATABASE_URL tanımlı değil; SQLite verileri '
+    'deploy veya yeniden başlatmada kaybolabilir.'
+    if IS_RAILWAY and not DATABASE_URL
+    else ''
+)
 try:
     state_store = create_state_store(
         database_url=DATABASE_URL,
@@ -95,12 +108,15 @@ print(
         else f'SQLite ({STATE_DB_PATH})'
     )
 )
+if PERSISTENCE_WARNING:
+    print(f'[ExamGuard] UYARI: {PERSISTENCE_WARNING}')
 persisted_state = state_store.load()
 exam_state.update(persisted_state.get('exam_state') or {})
 students.update(persisted_state.get('students') or {})
 student_sessions.update(persisted_state.get('student_sessions') or {})
 
 ANALYSIS_TIMEOUT_SECONDS = 20
+STUDENT_STALE_SECONDS = int(os.environ.get('STUDENT_STALE_SECONDS', '90'))
 
 DIRECT_SUSPICIOUS_REASONS = {
     'tab_switch',
@@ -265,6 +281,41 @@ def safe_filename_part(value, fallback):
 def emit_students():
     socketio.emit('students_update', list(students.values()), to='admins')
 
+def refresh_stale_students(current_time=None):
+    if not exam_state.get('active'):
+        return False
+
+    now = current_time or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=STUDENT_STALE_SECONDS)
+    changed = False
+    with exam_lifecycle_lock:
+        for student in students.values():
+            if student.get('status') != 'active':
+                continue
+            try:
+                last_seen = datetime.fromisoformat(
+                    str(student.get('lastSeen', '')).replace('Z', '+00:00')
+                )
+                if last_seen.tzinfo is None:
+                    last_seen = last_seen.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if last_seen < cutoff:
+                student['status'] = 'idle'
+                changed = True
+        if changed:
+            persist_state()
+    if changed:
+        emit_students()
+    return changed
+
+def mark_stale_students():
+    while True:
+        threading.Event().wait(15)
+        refresh_stale_students()
+
+threading.Thread(target=mark_stale_students, daemon=True).start()
+
 def increase_alert_count(sid: str):
     if sid in students:
         students[sid]['alertCount'] = students[sid].get('alertCount', 0) + 1
@@ -289,8 +340,9 @@ def finalize_evidence(payload, filepath, mime_type, keep):
         for key, value in payload.items()
         if key not in ('screenshot', 'filename')
     }
-    metadata['examId'] = exam_state.get('exam_id')
-    metadata['examStartedAt'] = exam_state.get('started_at')
+    metadata.setdefault('examId', exam_state.get('exam_id'))
+    metadata.setdefault('examStartedAt', exam_state.get('started_at'))
+    metadata.setdefault('examCode', exam_state.get('exam_code'))
     try:
         with open(filepath, 'rb') as image_file:
             image = image_file.read()
@@ -455,7 +507,7 @@ def student_session_status():
 @app.route('/student/verify', methods=['POST'])
 def student_verify():
     data = request.json or {}
-    code = data.get('code', '').strip()
+    code = data.get('code', '').strip().upper()
     name = data.get('name', '').strip()
     sid  = data.get('id', '').strip()
 
@@ -526,7 +578,10 @@ def receive_screenshot():
         student['name'] = students[sid].get('name', student.get('name', 'Bilinmiyor'))
     mode       = exam_state.get('mode', 'web')
     client_ctx = data.get('clientContext') or {}
-    event_id   = data.get('eventId') or str(uuid.uuid4())
+    event_id   = str(uuid.uuid4())
+    event_exam_id = exam_state.get('exam_id')
+    event_exam_code = exam_state.get('exam_code')
+    event_exam_started_at = exam_state.get('started_at')
 
     if sid in students:
         students[sid]['lastSeen'] = timestamp
@@ -536,7 +591,7 @@ def receive_screenshot():
     safe_ts = safe_filename_part(timestamp, now_iso().replace(':', '-'))
     safe_sid = safe_filename_part(sid, 'unknown')
     safe_reason = safe_filename_part(reason, 'periodic')
-    filename = f"{safe_sid}_{safe_reason}_{safe_ts}.jpg"
+    filename = f"{safe_sid}_{safe_reason}_{safe_ts}_{event_id}.jpg"
     filepath = os.path.join(SCREENSHOTS_DIR, filename)
     allowed_prefixes = (
         'data:image/jpeg;base64,',
@@ -572,6 +627,9 @@ def receive_screenshot():
         'screenshot':  screenshot,
         'filename':    filename,
         'mode':        mode,
+        'examId':      event_exam_id,
+        'examCode':    event_exam_code,
+        'examStartedAt': event_exam_started_at,
         'clientContext': client_ctx,
         'routingNote': routing.get('note')
     }
@@ -648,7 +706,7 @@ def receive_screenshot():
             emit_channel = 'screenshot'
             raw_suspicious = False
 
-        if raw_suspicious:
+        if raw_suspicious and exam_state.get('exam_id') == event_exam_id:
             increase_alert_count(sid)
 
         result_payload = {
@@ -678,15 +736,35 @@ def receive_alert():
     sid = authenticated_student(data)
     if not sid:
         return jsonify({'success': False, 'message': 'Geçersiz öğrenci oturumu.'}), 401
-    data.setdefault('student', {})['id'] = sid
+    student = {
+        'id': sid,
+        'name': students.get(sid, {}).get('name', 'Bilinmiyor'),
+    }
     increase_alert_count(sid)
     payload = {
-        **data,
-        'eventId': data.get('eventId') or str(uuid.uuid4()),
+        'type': str(data.get('type') or 'client_alert')[:80],
+        'student': student,
+        'timestamp': data.get('timestamp') or now_iso(),
+        'extensions': (data.get('extensions') or [])[:50],
+        'eventId': str(uuid.uuid4()),
+        'examId': exam_state.get('exam_id'),
+        'examCode': exam_state.get('exam_code'),
+        'examStartedAt': exam_state.get('started_at'),
+        'mode': exam_state.get('mode'),
         'analysisStatus': data.get('analysisStatus') or 'suspicious',
         'agentVerdict': data.get('agentVerdict') or 'ŞÜPHELİ',
         'agentReason': data.get('agentReason') or 'Kural tabanlı alarm.'
     }
+    try:
+        state_store.save_evidence(
+            payload['eventId'],
+            payload.get('timestamp') or now_iso(),
+            payload,
+            b'',
+            'application/octet-stream',
+        )
+    except Exception as exc:
+        print(f"[ExamGuard] Alarm geçmişe kaydedilemedi ({payload['eventId']}): {exc}")
     socketio.emit('alert', payload, to='admins')
     return jsonify({'success': True})
 
@@ -789,6 +867,10 @@ def handle_update_exam_code(data):
 def index():
     return send_from_directory('dashboard', 'index.html')
 
+@app.route('/violations')
+def violations_page():
+    return send_from_directory('dashboard', 'violations.html')
+
 @app.route('/state')
 def get_state():
     return jsonify(public_exam_state())
@@ -796,9 +878,10 @@ def get_state():
 @app.route('/health')
 def health():
     return jsonify({
-        'status': 'degraded' if DATABASE_ERROR else 'ok',
+        'status': 'degraded' if DATABASE_ERROR or PERSISTENCE_WARNING else 'ok',
         'database': DATABASE_BACKEND,
         'databaseError': DATABASE_ERROR or None,
+        'persistenceWarning': PERSISTENCE_WARNING or None,
         'adminTokenConfigured': bool(CONFIGURED_ADMIN_TOKEN),
         'visionConfigured': bool(GROQ_API_KEY),
         'visionModel': MODEL,
@@ -816,14 +899,58 @@ def get_history():
         limit = max(1, min(int(request.args.get('limit', 200)), 1000))
     except ValueError:
         limit = 200
+    exam_id = (request.args.get('examId') or '').strip() or None
     items = []
-    for row in state_store.list_evidence(limit):
+    for row in state_store.list_evidence(limit, exam_id=exam_id):
         metadata = dict(row.get('metadata') or {})
         metadata['eventId'] = row['eventId']
-        metadata['evidenceId'] = row['eventId']
+        has_image = str(row.get('mimeType') or '').startswith('image/')
+        metadata['hasImage'] = has_image
+        if has_image:
+            metadata['evidenceId'] = row['eventId']
         metadata['screenshot'] = ''
         items.append(metadata)
     return jsonify({'success': True, 'items': items})
+
+@app.route('/history/exams')
+def get_history_exams():
+    if not require_admin_http():
+        return jsonify({'success': False, 'message': 'Yetkisiz erişim.'}), 401
+
+    exams = {}
+    legacy_count = 0
+    for row in state_store.list_evidence(1000):
+        metadata = dict(row.get('metadata') or {})
+        exam_id = metadata.get('examId')
+        if not exam_id:
+            legacy_count += 1
+            continue
+
+        summary = exams.setdefault(exam_id, {
+            'examId': exam_id,
+            'examCode': metadata.get('examCode') or '',
+            'startedAt': metadata.get('examStartedAt') or '',
+            'mode': metadata.get('mode') or '',
+            'eventCount': 0,
+            'suspiciousCount': 0,
+            'lastEventAt': row.get('createdAt') or '',
+        })
+        summary['eventCount'] += 1
+        if metadata.get('analysisStatus') == 'suspicious' or metadata.get('suspicious'):
+            summary['suspiciousCount'] += 1
+        if not summary['examCode'] and metadata.get('examCode'):
+            summary['examCode'] = metadata['examCode']
+
+    items = sorted(
+        exams.values(),
+        key=lambda item: item.get('startedAt') or item.get('lastEventAt') or '',
+        reverse=True,
+    )
+    return jsonify({
+        'success': True,
+        'items': items,
+        'legacyCount': legacy_count,
+    })
 
 @app.route('/history/<event_id>/image')
 def get_history_image(event_id):
@@ -833,7 +960,112 @@ def get_history_image(event_id):
     if not evidence:
         return jsonify({'success': False, 'message': 'Kanıt bulunamadı.'}), 404
     image, mime_type = evidence
+    if not image or not str(mime_type or '').startswith('image/'):
+        return jsonify({'success': False, 'message': 'Bu olay için görüntü yok.'}), 404
     return Response(image, mimetype=mime_type)
+
+def evidence_download_name(metadata, event_id):
+    student_id = ((metadata.get('student') or {}).get('id') or 'unknown')
+    reason = metadata.get('reason') or metadata.get('type') or 'violation'
+    return '_'.join([
+        safe_filename_part(student_id, 'unknown'),
+        safe_filename_part(reason, 'violation'),
+        safe_filename_part(event_id, 'event'),
+    ])
+
+def add_evidence_to_zip(archive, row, folder=''):
+    metadata = dict(row.get('metadata') or {})
+    event_id = row['eventId']
+    base_name = evidence_download_name(metadata, event_id)
+    prefix = f'{folder}/' if folder else ''
+    archive.writestr(
+        f'{prefix}{base_name}.json',
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+    )
+
+    image = row.get('image')
+    mime_type = row.get('mimeType')
+    if image is None:
+        evidence = state_store.get_evidence_image(event_id)
+        if not evidence:
+            return
+        image, mime_type = evidence
+    if not image or not str(mime_type or '').startswith('image/'):
+        return
+    extension = 'png' if mime_type == 'image/png' else 'jpg'
+    archive.writestr(f'{prefix}{base_name}.{extension}', image)
+
+def zip_response(buffer, filename):
+    buffer.seek(0)
+    response = Response(buffer.getvalue(), mimetype='application/zip')
+    response.headers['Content-Disposition'] = (
+        f'attachment; filename="{safe_filename_part(filename, "evidence")}.zip"'
+    )
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+@app.route('/history/<event_id>/download')
+def download_history_event(event_id):
+    if not require_admin_http():
+        return jsonify({'success': False, 'message': 'Yetkisiz erişim.'}), 401
+    row = state_store.get_evidence(event_id)
+    if not row:
+        return jsonify({'success': False, 'message': 'Kanıt bulunamadı.'}), 404
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        add_evidence_to_zip(archive, row)
+    return zip_response(buffer, evidence_download_name(
+        row.get('metadata') or {},
+        event_id,
+    ))
+
+@app.route('/history/download')
+def download_history_archive():
+    if not require_admin_http():
+        return jsonify({'success': False, 'message': 'Yetkisiz erişim.'}), 401
+    exam_id = (request.args.get('examId') or '').strip()
+    if not exam_id:
+        return jsonify({'success': False, 'message': 'Sınav seçimi zorunludur.'}), 400
+
+    rows = state_store.list_evidence(1000, exam_id=exam_id)
+    if not rows:
+        return jsonify({'success': False, 'message': 'Bu sınava ait kanıt yok.'}), 404
+
+    first_metadata = rows[0].get('metadata') or {}
+    exam_code = first_metadata.get('examCode') or exam_id[:8]
+    manifest = {
+        'examId': exam_id,
+        'examCode': first_metadata.get('examCode') or '',
+        'examStartedAt': first_metadata.get('examStartedAt') or '',
+        'exportedAt': now_iso(),
+        'eventCount': len(rows),
+        'events': [
+            {
+                'eventId': row['eventId'],
+                **dict(row.get('metadata') or {}),
+            }
+            for row in rows
+        ],
+    }
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            'manifest.json',
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+        )
+        for row in rows:
+            student_id = (
+                ((row.get('metadata') or {}).get('student') or {}).get('id')
+                or 'unknown'
+            )
+            add_evidence_to_zip(
+                archive,
+                row,
+                folder=safe_filename_part(student_id, 'unknown'),
+            )
+    return zip_response(buffer, f'examguard_{exam_code}_{exam_id[:8]}')
 
 @app.route('/screenshots/<path:filename>')
 def serve_screenshot(filename):

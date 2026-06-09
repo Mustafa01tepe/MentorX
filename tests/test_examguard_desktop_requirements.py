@@ -11,8 +11,9 @@ class DesktopRequirementsTests(unittest.TestCase):
             ROOT / "apps" / "examguard" / "desktop" / "requirements.txt"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("python-socketio[client]==5.11.2", requirements)
-        self.assertIn("python-engineio==4.9.1", requirements)
+        self.assertIn("python-socketio[client]==5.16.2", requirements)
+        self.assertIn("python-engineio==4.13.2", requirements)
+        self.assertIn("pywin32==312", requirements)
 
 
 if __name__ == "__main__":

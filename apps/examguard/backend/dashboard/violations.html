@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ExamGuard İhlal Arşivi</title>
+<style>
+  :root {
+    --bg:#090d12; --panel:#111821; --surface:#17202b; --border:#273241;
+    --text:#e5edf6; --muted:#8795a8; --accent:#ef4444; --warn:#f59e0b;
+    --ok:#22c55e; --mono:'Courier New',monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:Arial,sans-serif; }
+  header { height:64px; display:flex; align-items:center; gap:14px; padding:0 20px; border-bottom:1px solid var(--border); background:#0c1219; }
+  .logo { font:700 15px var(--mono); letter-spacing:3px; }
+  .logo span { color:var(--accent); }
+  .subtitle { color:var(--muted); font:10px var(--mono); letter-spacing:2px; }
+  .spacer { flex:1; }
+  button, select {
+    background:var(--surface); color:var(--text); border:1px solid var(--border);
+    border-radius:4px; padding:8px 10px; font:10px var(--mono); cursor:pointer;
+  }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:white; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  main { height:calc(100vh - 64px); display:grid; grid-template-columns:280px 380px 1fr; }
+  .column { min-width:0; border-right:1px solid var(--border); overflow:auto; }
+  .column:last-child { border-right:0; }
+  .column-head { position:sticky; top:0; z-index:2; background:#0f151d; border-bottom:1px solid var(--border); padding:12px; font:10px var(--mono); letter-spacing:2px; }
+  .exam, .event { margin:9px; padding:12px; background:var(--panel); border:1px solid var(--border); border-radius:5px; cursor:pointer; }
+  .exam:hover, .event:hover, .selected { border-color:var(--accent); }
+  .exam-name, .event-name { font:700 11px var(--mono); }
+  .meta { margin-top:7px; color:var(--muted); font:9px var(--mono); line-height:1.6; }
+  .count { color:var(--warn); }
+  .detail { padding:22px; }
+  .empty { color:var(--muted); font:11px var(--mono); text-align:center; padding:40px 16px; }
+  .evidence { width:100%; max-height:55vh; object-fit:contain; background:#06090d; border:1px solid var(--border); border-radius:5px; }
+  .detail-title { color:var(--accent); font:700 13px var(--mono); letter-spacing:1px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:14px 0; }
+  .cell { background:var(--panel); border:1px solid var(--border); padding:10px; border-radius:4px; }
+  .cell label { display:block; color:var(--muted); font:8px var(--mono); margin-bottom:5px; }
+  .cell span { font:11px var(--mono); overflow-wrap:anywhere; }
+  .reason { background:var(--panel); border-left:3px solid var(--warn); padding:12px; font:11px var(--mono); line-height:1.6; }
+  .actions { display:flex; gap:8px; margin-top:14px; }
+  @media(max-width:900px) { main { grid-template-columns:1fr; height:auto; } .column { border-right:0; border-bottom:1px solid var(--border); max-height:50vh; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">EXAM<span>GUARD</span></div>
+  <div class="subtitle">İHLAL ARŞİVİ</div>
+  <div class="spacer"></div>
+  <button id="downloadExam" disabled>SEÇİLİ SINAVI ZIP İNDİR</button>
+  <button onclick="location.href='/'">CANLI PANELE DÖN</button>
+  <button id="tokenButton">TOKEN</button>
+</header>
+<main>
+  <section class="column">
+    <div class="column-head">SINAVLAR</div>
+    <div id="examList"><div class="empty">Yükleniyor...</div></div>
+  </section>
+  <section class="column">
+    <div class="column-head">İHLALLER <span id="eventCount"></span></div>
+    <div id="eventList"><div class="empty">Bir sınav seçin</div></div>
+  </section>
+  <section class="column">
+    <div class="column-head">KANIT DETAYI</div>
+    <div class="detail" id="detail"><div class="empty">Bir ihlal seçin</div></div>
+  </section>
+</main>
+<script>
+let adminToken=localStorage.getItem('examguardAdminToken')||'';
+let selectedExamId='';
+let selectedEvent=null;
+const tokenButton=document.getElementById('tokenButton');
+
+function esc(value){
+  return String(value??'').replace(/[&<>"']/g,ch=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[ch]);
+}
+function authHeaders(){return {'Authorization':`Bearer ${adminToken}`};}
+function fmt(value){return value?new Date(value).toLocaleString('tr-TR'):'—';}
+function promptToken(){
+  const entered=prompt('Öğretmen tokenını girin:',adminToken);
+  if(entered===null)return false;
+  adminToken=entered.trim();
+  if(adminToken)localStorage.setItem('examguardAdminToken',adminToken);
+  else localStorage.removeItem('examguardAdminToken');
+  loadExams();
+  return !!adminToken;
+}
+async function api(url){
+  const response=await fetch(url,{headers:authHeaders()});
+  if(response.status===401){promptToken();throw new Error('Yetkisiz erişim');}
+  if(!response.ok)throw new Error(`HTTP ${response.status}`);
+  return response;
+}
+async function loadExams(){
+  if(!adminToken){promptToken();return;}
+  try{
+    const result=await (await api('/history/exams')).json();
+    const list=document.getElementById('examList');
+    list.innerHTML='';
+    (result.items||[]).forEach(exam=>{
+      const card=document.createElement('div');
+      card.className=`exam${exam.examId===selectedExamId?' selected':''}`;
+      card.innerHTML=`<div class="exam-name">${esc(exam.examCode||exam.examId.slice(0,8))}</div>
+        <div class="meta">${esc(fmt(exam.startedAt))}<br>
+        ${esc(exam.mode||'—')} · <span class="count">${exam.suspiciousCount}</span> / ${exam.eventCount} kayıt</div>`;
+      card.onclick=()=>selectExam(exam.examId);
+      list.appendChild(card);
+    });
+    if(!list.children.length)list.innerHTML='<div class="empty">Kayıtlı ihlal yok</div>';
+  }catch(error){console.error(error);}
+}
+async function selectExam(examId){
+  selectedExamId=examId;
+  selectedEvent=null;
+  document.getElementById('downloadExam').disabled=false;
+  document.getElementById('detail').innerHTML='<div class="empty">Bir ihlal seçin</div>';
+  await loadExams();
+  try{
+    const result=await (await api(`/history?limit=1000&examId=${encodeURIComponent(examId)}`)).json();
+    const items=(result.items||[]).filter(item=>
+      item.analysisStatus==='suspicious'||item.analysisStatus==='uncertain'||item.suspicious
+    );
+    document.getElementById('eventCount').textContent=`(${items.length})`;
+    const list=document.getElementById('eventList');
+    list.innerHTML='';
+    items.forEach(item=>{
+      const card=document.createElement('div');
+      card.className='event';
+      const student=item.student||{};
+      card.innerHTML=`<div class="event-name">${esc(item.reasonLabel||item.reason||item.type||'İhlal')}</div>
+        <div class="meta">${esc(student.name||'?')} · ${esc(student.id||'—')}<br>${esc(fmt(item.timestamp))}</div>`;
+      card.onclick=()=>showEvent(item,card);
+      list.appendChild(card);
+    });
+    if(!items.length)list.innerHTML='<div class="empty">Bu sınavda ihlal yok</div>';
+  }catch(error){console.error(error);}
+}
+async function showEvent(item,card){
+  selectedEvent=item;
+  document.querySelectorAll('.event').forEach(node=>node.classList.remove('selected'));
+  card.classList.add('selected');
+  const student=item.student||{};
+  const detail=document.getElementById('detail');
+  detail.innerHTML=`<div class="detail-title">${esc(item.reasonLabel||item.reason||item.type||'İhlal')}</div>
+    <div id="imageArea">${item.hasImage?'<div class="empty">Görüntü yükleniyor...</div>':'<div class="empty">Bu olayda ekran görüntüsü yok</div>'}</div>
+    <div class="grid">
+      ${cell('ÖĞRENCİ',student.name||'—')}${cell('NUMARA',student.id||'—')}
+      ${cell('ZAMAN',fmt(item.timestamp))}${cell('DURUM',item.analysisStatus||'—')}
+      ${cell('MOD',item.mode||'—')}${cell('OLAY ID',item.eventId||'—')}
+    </div>
+    <div class="reason">${esc(item.agentReason||item.routingNote||'Açıklama yok')}</div>
+    <div class="actions"><button class="primary" onclick="downloadEvent()">KANITI ZIP İNDİR</button></div>`;
+  if(item.hasImage&&item.evidenceId){
+    try{
+      const blob=await (await api(`/history/${encodeURIComponent(item.evidenceId)}/image`)).blob();
+      const url=URL.createObjectURL(blob);
+      document.getElementById('imageArea').innerHTML=`<img class="evidence" src="${url}" alt="Kanıt">`;
+    }catch(error){document.getElementById('imageArea').innerHTML='<div class="empty">Görüntü yüklenemedi</div>';}
+  }
+}
+function cell(label,value){return `<div class="cell"><label>${esc(label)}</label><span>${esc(value)}</span></div>`;}
+async function download(url,fallbackName){
+  const response=await api(url);
+  const blob=await response.blob();
+  const disposition=response.headers.get('Content-Disposition')||'';
+  const match=disposition.match(/filename="([^"]+)"/);
+  const link=document.createElement('a');
+  link.href=URL.createObjectURL(blob);
+  link.download=match?match[1]:fallbackName;
+  document.body.appendChild(link);link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+}
+function downloadEvent(){
+  if(selectedEvent)download(`/history/${encodeURIComponent(selectedEvent.eventId)}/download`,'kanit.zip');
+}
+document.getElementById('downloadExam').onclick=()=>{
+  if(selectedExamId)download(`/history/download?examId=${encodeURIComponent(selectedExamId)}`,'sinav_ihlalleri.zip');
+};
+tokenButton.onclick=promptToken;
+loadExams();
+</script>
+</body>
+</html>

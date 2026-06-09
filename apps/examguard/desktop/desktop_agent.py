@@ -4,6 +4,7 @@ import time
 import threading
 import io
 import base64
+from datetime import datetime, timezone
 import requests
 import tkinter as tk
 import pyautogui
@@ -20,7 +21,8 @@ from PIL import Image, ImageDraw
 BACKEND_URL         = 'https://monitoragent-production.up.railway.app'
 STATE_POLL_INTERVAL = 5
 CODING_SS_INTERVAL  = 30
-UNFOCUS_WAIT        = 1
+HEARTBEAT_INTERVAL  = 30
+UNFOCUS_WAIT        = 3
 
 # ─────────────────────────────────────────
 # GLOBAL STATE
@@ -31,7 +33,9 @@ exam_mode         = 'web'
 student_info      = {}
 session_token     = ''
 last_coding_ss    = 0
-chrome_was_active = False
+last_heartbeat    = 0
+chrome_unfocused_since = None
+chrome_unfocus_reported = False
 tray_icon         = None
 login_pending     = False   # giriş ekranı açık mı
 tray_lock         = threading.Lock()
@@ -227,7 +231,7 @@ def send_screenshot(reason):
             'reason':     reason,
             'details':    'Desktop agent',
             'student':    student_info,
-            'timestamp':  time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'timestamp':  datetime.now(timezone.utc).isoformat(),
             'tabUrl':     '',
             'tabTitle':   'Masaüstü',
             'mode':       exam_mode,
@@ -241,6 +245,26 @@ def send_screenshot(reason):
         print(f'[Agent] SS gönderildi: {reason}')
     except Exception as e:
         print(f'[Agent] Gönderme hatası: {e}')
+
+def send_heartbeat():
+    if not session_token or not student_info:
+        return
+    try:
+        response = requests.post(
+            f'{BACKEND_URL}/student/heartbeat',
+            headers={'Authorization': f'Bearer {session_token}'},
+            json={
+                'student': student_info,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            },
+            timeout=5,
+        )
+        if response.status_code == 401:
+            clear_student_session()
+            ensure_login_prompt()
+        response.raise_for_status()
+    except Exception as e:
+        print(f'[Agent] Heartbeat hatası: {e}')
 
 # ─────────────────────────────────────────
 # WEBSOCKET EVENTS
@@ -328,7 +352,8 @@ def fetch_state():
 # ANA DÖNGÜ
 # ─────────────────────────────────────────
 def monitoring_loop():
-    global chrome_was_active, last_coding_ss, running
+    global last_coding_ss, last_heartbeat, running
+    global chrome_unfocused_since, chrome_unfocus_reported
 
     last_state_check = 0
 
@@ -343,8 +368,10 @@ def monitoring_loop():
                     update_tray('green', f'ExamGuard — AKTİF ({exam_mode})')
                 else:
                     update_tray('gray', 'ExamGuard — Bekliyor')
-                    chrome_was_active = False
                     last_coding_ss    = 0
+                    last_heartbeat    = 0
+                    chrome_unfocused_since = None
+                    chrome_unfocus_reported = False
 
         if not exam_active:
             time.sleep(1)
@@ -352,17 +379,29 @@ def monitoring_loop():
 
         ensure_login_prompt()
 
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+            send_heartbeat()
+            last_heartbeat = now
+
         if exam_mode == 'web':
             chrome_now = is_chrome_active()
-            if chrome_was_active and not chrome_now:
-                time.sleep(UNFOCUS_WAIT)
-                send_screenshot('desktop_unfocused')
-                update_tray('red', 'ExamGuard — Şüpheli Hareket!')
-                time.sleep(2)
-                update_tray('green', f'ExamGuard — AKTİF ({exam_mode})')
-            chrome_was_active = chrome_now
+            if chrome_now:
+                chrome_unfocused_since = None
+                chrome_unfocus_reported = False
+            else:
+                if chrome_unfocused_since is None:
+                    chrome_unfocused_since = now
+                elif (
+                    not chrome_unfocus_reported
+                    and now - chrome_unfocused_since >= UNFOCUS_WAIT
+                ):
+                    send_screenshot('desktop_unfocused')
+                    chrome_unfocus_reported = True
+                    update_tray('red', 'ExamGuard — Şüpheli Hareket!')
 
         elif exam_mode == 'coding':
+            chrome_unfocused_since = None
+            chrome_unfocus_reported = False
             if now - last_coding_ss >= CODING_SS_INTERVAL:
                 send_screenshot('desktop_periodic')
                 last_coding_ss = now
@@ -384,7 +423,7 @@ def setup_tray():
     menu = pystray.Menu(
         pystray.MenuItem('ExamGuard Desktop Agent', None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem('Çıkış', on_quit)
+        pystray.MenuItem('Çıkış', on_quit, enabled=lambda _item: not exam_active)
     )
     tray_icon = pystray.Icon('ExamGuard', create_icon('gray'),
                               'ExamGuard — Bekliyor', menu)

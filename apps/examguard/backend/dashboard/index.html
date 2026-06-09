@@ -185,6 +185,7 @@
 
   .btn-clear { background:none; border:1px solid var(--border); color:var(--muted); font-family:var(--mono); font-size:9px; padding:2px 7px; border-radius:2px; cursor:pointer; letter-spacing:1px; }
   .btn-clear:hover { border-color:var(--accent); color:var(--accent); }
+  .history-select { background:var(--panel); border:1px solid var(--border); color:var(--text); font-family:var(--mono); font-size:9px; padding:2px 5px; max-width:220px; }
 </style>
 </head>
 <body>
@@ -221,6 +222,7 @@
       <div class="stat"><div class="stat-val yellow" id="sSus">0</div><div class="stat-lbl">Şüpheli</div></div>
       <div class="stat"><div class="stat-val green"  id="sTotal">0</div><div class="stat-lbl">SS</div></div>
     </div>
+    <button class="btn btn-apply" onclick="window.open('/violations','_blank')">İHLAL ARŞİVİ</button>
     <button class="btn btn-apply" id="btnToken" onclick="requestAdminToken()">TOKEN</button>
     <div class="conn-badge off" id="connBadge">● YOK</div>
   </div>
@@ -244,6 +246,9 @@
     <div class="panel-hdr">
       <span>OLAY AKIŞI</span>
       <span>
+        <select class="history-select" id="historyExam" onchange="loadHistory()">
+          <option value="">TÜM SINAVLAR</option>
+        </select>
         <button class="btn-clear" onclick="loadHistory()">GEÇMİŞ</button>
         <button class="btn-clear" onclick="clearFeed()">TEMİZLE</button>
       </span>
@@ -329,7 +334,7 @@ socket.on('disconnect', () => {
 socket.on('admin_authenticated', () => {
   adminAuthenticated = true;
   updateAdminUi();
-  loadHistory();
+  loadHistoryExams().then(loadHistory);
 });
 socket.on('admin_error', (data) => {
   adminAuthenticated = false;
@@ -414,10 +419,12 @@ function renderStudents(list) {
 
 // ── Olaylar ──
 socket.on('analysis_pending', (data) => {
+  if (!matchesSelectedExam(data)) return;
   addOrUpdateCard(data, 'pending');
 });
 
 socket.on('alert', (data) => {
+  if (!matchesSelectedExam(data)) return;
   countFinalEvent(data);
   const cls = classifyCard(data, true);
   addOrUpdateCard(data, cls);
@@ -425,6 +432,7 @@ socket.on('alert', (data) => {
 });
 
 socket.on('screenshot', (data) => {
+  if (!matchesSelectedExam(data)) return;
   countFinalEvent(data);
   const cls = classifyCard(data, false);
   addOrUpdateCard(data, cls);
@@ -522,18 +530,54 @@ function countFinalEvent(data){
 async function loadHistory(){
   if (!requireAdmin()) return;
   try {
-    const response = await fetch('/history?limit=200', {
+    const examId = document.getElementById('historyExam').value;
+    const params = new URLSearchParams({ limit: '200' });
+    if (examId) params.set('examId', examId);
+    const response = await fetch(`/history?${params}`, {
       headers: { 'Authorization': `Bearer ${adminToken}` }
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const result = await response.json();
     const items = Array.isArray(result.items) ? result.items : [];
+    clearFeed();
     items.slice().reverse().forEach(data => {
       countFinalEvent(data);
       addOrUpdateCard(data, classifyCard(data, data.analysisStatus === 'suspicious'));
     });
   } catch (error) {
     console.error('[ExamGuard] Geçmiş yüklenemedi:', error);
+  }
+}
+
+function matchesSelectedExam(data) {
+  const selectedExamId = document.getElementById('historyExam').value;
+  return !selectedExamId || data.examId === selectedExamId;
+}
+
+async function loadHistoryExams(){
+  if (!requireAdmin()) return;
+  try {
+    const response = await fetch('/history/exams', {
+      headers: { 'Authorization': `Bearer ${adminToken}` }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    const select = document.getElementById('historyExam');
+    const selectedExamId = select.value;
+    select.innerHTML = '<option value="">TÜM SINAVLAR</option>';
+    (result.items || []).forEach(exam => {
+      const option = document.createElement('option');
+      option.value = exam.examId;
+      const date = exam.startedAt ? new Date(exam.startedAt).toLocaleString('tr-TR') : 'Tarih yok';
+      const name = exam.examCode || `${exam.mode || 'sınav'} · ${exam.examId.slice(0, 8)}`;
+      option.textContent = `${name} · ${date} · ${exam.suspiciousCount}/${exam.eventCount} ihlal`;
+      select.appendChild(option);
+    });
+    if ([...select.options].some(option => option.value === selectedExamId)) {
+      select.value = selectedExamId;
+    }
+  } catch (error) {
+    console.error('[ExamGuard] Sınav geçmişi yüklenemedi:', error);
   }
 }
 

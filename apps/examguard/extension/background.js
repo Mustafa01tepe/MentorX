@@ -3,6 +3,7 @@
 const BACKEND_URL = 'https://monitoragent-production.up.railway.app';
 const SCREENSHOT_INTERVAL_SECONDS = 30;
 const STATE_CHECK_INTERVAL_SECONDS = 30;
+const UNFOCUS_CAPTURE_DELAY_MS = 3000;
 const UNFOCUS_CAPTURE_COOLDOWN_MS = 7000;
 
 // Hoca dashboard'dan gönderir, başlangıçta boş
@@ -15,6 +16,8 @@ let examMode    = 'web';
 let examStartedAt = null;
 let examDuration = null;
 let lastUnfocusCaptureAt = 0;
+let windowUnfocusTimer = null;
+const pageUnfocusTimers = new Map();
 let backendConnected = false;
 let lastSyncError = '';
 let syncInProgress = null;
@@ -115,6 +118,8 @@ async function clearLocalSession() {
   examDuration = null;
   allowedUrls = [];
   lastUnfocusCaptureAt = 0;
+  clearWindowUnfocusTimer();
+  clearPageUnfocusTimers();
   await chrome.storage.local.set({
     examActive: false,
     studentInfo: null,
@@ -256,11 +261,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   }
 
-  // Content script görünürlük kaybını bildirdiğinde (tab arka plana düştü)
-  if (message.type === 'PAGE_HIDDEN') {
-    if (examActive) {
-      captureUnfocusEvidence('Sayfa görünürlüğü kayboldu (document.hidden)')
-        .catch(() => {});
+  // Sekme 3 saniye boyunca görünmez kalırsa kanıt al.
+  if (message.type === 'PAGE_VISIBILITY_CHANGED') {
+    const tabId = sender.tab?.id;
+    if (Number.isInteger(tabId)) {
+      if (examActive && message.hidden === true) {
+        schedulePageUnfocusCapture(tabId);
+      } else {
+        clearPageUnfocusTimer(tabId);
+      }
     }
     sendResponse({ success: true });
   }
@@ -399,6 +408,53 @@ async function captureUnfocusEvidence(details = '') {
   await captureAndSend('window_unfocused', details || 'Chrome arka plana atıldı');
 }
 
+function clearPageUnfocusTimer(tabId) {
+  const timer = pageUnfocusTimers.get(tabId);
+  if (timer) clearTimeout(timer);
+  pageUnfocusTimers.delete(tabId);
+}
+
+function clearPageUnfocusTimers() {
+  for (const timer of pageUnfocusTimers.values()) clearTimeout(timer);
+  pageUnfocusTimers.clear();
+}
+
+function schedulePageUnfocusCapture(tabId) {
+  clearPageUnfocusTimer(tabId);
+  const timer = setTimeout(async () => {
+    pageUnfocusTimers.delete(tabId);
+    if (!examActive) return;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.active) return;
+      await captureUnfocusEvidence(
+        'Sekme en az 3 saniye boyunca arka planda kaldı'
+      );
+    } catch {
+      // Sekme kapatıldıysa kanıt üretme.
+    }
+  }, UNFOCUS_CAPTURE_DELAY_MS);
+  pageUnfocusTimers.set(tabId, timer);
+}
+
+function clearWindowUnfocusTimer() {
+  if (windowUnfocusTimer) clearTimeout(windowUnfocusTimer);
+  windowUnfocusTimer = null;
+}
+
+function scheduleWindowUnfocusCapture() {
+  clearWindowUnfocusTimer();
+  windowUnfocusTimer = setTimeout(async () => {
+    windowUnfocusTimer = null;
+    if (!examActive) return;
+    const lastFocusedWindow = await chrome.windows.getLastFocused().catch(() => null);
+    if (lastFocusedWindow?.focused) return;
+    await captureUnfocusEvidence(
+      'Chrome en az 3 saniye boyunca arka planda kaldı veya alta indirildi'
+    );
+  }, UNFOCUS_CAPTURE_DELAY_MS);
+}
+
 // ─────────────────────────────────────────
 // YENİ SEKME AÇMA
 // ─────────────────────────────────────────
@@ -425,10 +481,10 @@ chrome.windows.onCreated.addListener(async (win) => {
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (!examActive) return;
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
-    // 1 saniye bekle — öğrenci nereye geçtiği belli olsun
-    await new Promise(r => setTimeout(r, 1000));
-    await captureUnfocusEvidence('Chrome arka plana atıldı');
+    scheduleWindowUnfocusCapture();
+    return;
   }
+  clearWindowUnfocusTimer();
 });
 
 // ─────────────────────────────────────────
