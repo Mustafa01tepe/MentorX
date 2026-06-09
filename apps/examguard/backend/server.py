@@ -30,10 +30,12 @@ socketio = SocketIO(
 
 SCREENSHOTS_DIR = os.environ.get('SCREENSHOTS_DIR', '/tmp/examguard_screenshots')
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-CONFIGURED_ADMIN_TOKEN = os.environ.get('ADMIN_TOKEN')
+CONFIGURED_ADMIN_TOKEN = (os.environ.get('ADMIN_TOKEN') or '').strip()
 ADMIN_TOKEN = CONFIGURED_ADMIN_TOKEN or secrets.token_urlsafe(24)
 if not CONFIGURED_ADMIN_TOKEN:
     print(f'[ExamGuard] ADMIN_TOKEN tanımlı değil. Geçici öğretmen tokenı: {ADMIN_TOKEN}')
+else:
+    print(f'[ExamGuard] ADMIN_TOKEN yüklendi (uzunluk: {len(ADMIN_TOKEN)})')
 MAX_SCREENSHOT_BYTES = int(os.environ.get('MAX_SCREENSHOT_BYTES', 5 * 1024 * 1024))
 MAX_REQUEST_BYTES = int(os.environ.get('MAX_REQUEST_BYTES', 8 * 1024 * 1024))
 app.config['MAX_CONTENT_LENGTH'] = MAX_REQUEST_BYTES
@@ -629,7 +631,7 @@ def serve_screenshot(filename):
 
 @socketio.on('connect')
 def on_connect(auth=None):
-    supplied_token = (auth or {}).get('adminToken', '')
+    supplied_token = str((auth or {}).get('adminToken', '') or '').strip()
     if supplied_token and secrets.compare_digest(supplied_token, ADMIN_TOKEN):
         admin_sockets.add(request.sid)
         join_room('admins')
