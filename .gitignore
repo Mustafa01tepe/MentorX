@@ -12,6 +12,7 @@ __pycache__/
 venv/
 
 *.json
+!apps/examguard/extension/manifest.json
 *.jsonl
 *.csv
 *.tsv
