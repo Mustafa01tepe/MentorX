@@ -73,6 +73,12 @@ class PostgresStateStore:
         retry_delay=2,
         connect_timeout=5,
     ):
+        normalized_url = str(database_url or '').strip()
+        if not normalized_url.startswith(('postgres://', 'postgresql://')):
+            raise RuntimeError(
+                'DATABASE_URL tam PostgreSQL bağlantı URLsi olmalıdır; '
+                'yalnızca host adı kullanılamaz.'
+            )
         try:
             import psycopg
             from psycopg.types.json import Jsonb
@@ -81,7 +87,7 @@ class PostgresStateStore:
                 "PostgreSQL için psycopg paketi kurulu olmalıdır."
             ) from exc
 
-        self.database_url = database_url
+        self.database_url = normalized_url
         self._psycopg = psycopg
         self._jsonb = Jsonb
         self.connect_attempts = max(1, int(connect_attempts))

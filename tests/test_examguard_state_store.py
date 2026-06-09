@@ -82,6 +82,15 @@ class SQLiteStateStoreTests(unittest.TestCase):
             connect_timeout=3,
         )
 
+    def test_postgres_store_rejects_bare_hostname(self):
+        import state_store
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "tam PostgreSQL bağlantı URLsi",
+        ):
+            state_store.PostgresStateStore("postgres.railway.internal")
+
 
 if __name__ == "__main__":
     unittest.main()
