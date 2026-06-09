@@ -1,6 +1,6 @@
 // ExamGuard - background.js
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = 'https://monitoragent-production.up.railway.app';
 const SCREENSHOT_INTERVAL_SECONDS = 30;
 const STATE_CHECK_INTERVAL_SECONDS = 10;
 const UNFOCUS_CAPTURE_COOLDOWN_MS = 7000;

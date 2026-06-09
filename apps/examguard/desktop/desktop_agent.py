@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 # ─────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────
-BACKEND_URL         = 'http://localhost:5000'
+BACKEND_URL         = 'https://monitoragent-production.up.railway.app'
 STATE_POLL_INTERVAL = 5
 CODING_SS_INTERVAL  = 30
 UNFOCUS_WAIT        = 1

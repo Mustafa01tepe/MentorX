@@ -2,7 +2,7 @@
 
 let timerInterval = null;
 let currentState = null;
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = 'https://monitoragent-production.up.railway.app';
 
 function updateUI(state) {
   currentState = state;
