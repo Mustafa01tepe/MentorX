@@ -71,6 +71,7 @@ class SQLiteStateStoreTests(unittest.TestCase):
                 database_url="postgresql://example",
                 connect_attempts=5,
                 retry_delay=1.5,
+                connect_timeout=3,
             )
 
         self.assertIs(result, sentinel)
@@ -78,6 +79,7 @@ class SQLiteStateStoreTests(unittest.TestCase):
             "postgresql://example",
             connect_attempts=5,
             retry_delay=1.5,
+            connect_timeout=3,
         )
 
 

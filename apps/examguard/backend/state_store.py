@@ -66,7 +66,13 @@ class SQLiteStateStore:
 
 
 class PostgresStateStore:
-    def __init__(self, database_url, connect_attempts=8, retry_delay=2):
+    def __init__(
+        self,
+        database_url,
+        connect_attempts=8,
+        retry_delay=2,
+        connect_timeout=5,
+    ):
         try:
             import psycopg
             from psycopg.types.json import Jsonb
@@ -80,10 +86,15 @@ class PostgresStateStore:
         self._jsonb = Jsonb
         self.connect_attempts = max(1, int(connect_attempts))
         self.retry_delay = max(0, float(retry_delay))
+        self.connect_timeout = max(1, int(connect_timeout))
         self._initialize()
 
     def _connect(self):
-        return self._psycopg.connect(self.database_url, autocommit=True)
+        return self._psycopg.connect(
+            self.database_url,
+            autocommit=True,
+            connect_timeout=self.connect_timeout,
+        )
 
     def _with_retry(self, operation):
         last_error = None
@@ -161,11 +172,13 @@ def create_state_store(
     sqlite_path="examguard_state.sqlite3",
     connect_attempts=8,
     retry_delay=2,
+    connect_timeout=5,
 ):
     if database_url:
         return PostgresStateStore(
             database_url,
             connect_attempts=connect_attempts,
             retry_delay=retry_delay,
+            connect_timeout=connect_timeout,
         )
     return SQLiteStateStore(sqlite_path)

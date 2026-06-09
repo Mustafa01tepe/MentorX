@@ -74,7 +74,8 @@ try:
         database_url=DATABASE_URL,
         sqlite_path=STATE_DB_PATH,
         connect_attempts=os.environ.get('DATABASE_CONNECT_ATTEMPTS', '8'),
-        retry_delay=os.environ.get('DATABASE_RETRY_DELAY_SECONDS', '2')
+        retry_delay=os.environ.get('DATABASE_RETRY_DELAY_SECONDS', '2'),
+        connect_timeout=os.environ.get('DATABASE_CONNECT_TIMEOUT_SECONDS', '5')
     )
     DATABASE_BACKEND = 'postgresql' if DATABASE_URL else 'sqlite'
 except RuntimeError as exc:
