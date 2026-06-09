@@ -89,9 +89,12 @@ Windows masaüstü ajanı:
 
 ```powershell
 cd apps\examguard\desktop
-python -m pip install -r requirements.txt
-python desktop_agent.py
+PowerShell -ExecutionPolicy Bypass -File .\install_startup.ps1
 ```
+
+Bu kurulum ajanı Windows başlangıcına ekler ve hemen çalıştırır. Ajan sistem
+tepsisinde bekler; öğretmen sınavı başlattığında otomatik olarak aktifleşip
+öğrenci giriş ekranını açar.
 
 Chrome eklentisini yüklemek için `apps/examguard/extension` klasörünü
 Chrome'un "Paketlenmemiş öğe yükle" ekranından seçin.

@@ -223,8 +223,20 @@ Adresin sonunda `/` kullanmayın.
 
 ```powershell
 cd mentorx-code\apps\examguard\desktop
-python -m pip install -r requirements.txt
-python desktop_agent.py
+PowerShell -ExecutionPolicy Bypass -File .\install_startup.ps1
+```
+
+Kurulum ajanı Windows başlangıcına ekler ve ilk kez hemen çalıştırır. Ajan
+sınav yokken sistem tepsisinde bekler. Öğretmen panelinden sınav
+başlatıldığında backend'in `exam_started` olayıyla otomatik aktifleşir ve
+öğrenci giriş ekranını açar. Dashboard veya Chrome eklentisi Windows
+uygulamasını doğrudan başlatmaz; ajan bu nedenle bilgisayar açılışında
+çalışır durumda olmalıdır.
+
+Otomatik başlangıcı kaldırmak için:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\uninstall_startup.ps1
 ```
 
 Öğrenci bilgisayarı PostgreSQL'e bağlanmaz. Yalnızca Railway backend'e HTTPS
@@ -301,7 +313,7 @@ sayfasındaki ExamGuard kartından `Yeniden yükle` düğmesine basın.
 4. Güçlü ve geçici bir sınav kodu belirleyin.
 5. Moodle sınav adresini izinli URL olarak ekleyin.
 6. `Sınavı Başlat` düğmesine basın.
-7. Öğrenci bilgisayarında masaüstü ajanını çalıştırın.
+7. Sistem tepsisinde masaüstü ajanının çalıştığını doğrulayın.
 8. Chrome eklentisini açın.
 9. Ad, öğrenci numarası ve sınav koduyla giriş yapın.
 10. Öğretmen panelinde öğrencinin aktif göründüğünü doğrulayın.
