@@ -8,7 +8,7 @@ eventlet.monkey_patch()
 from flask import Flask, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, join_room
 from flask_cors import CORS
-import base64, binascii, os, re, secrets, threading, uuid
+import base64, binascii, hashlib, os, re, secrets, threading, uuid
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from agent import analyze_async
@@ -30,12 +30,20 @@ socketio = SocketIO(
 
 SCREENSHOTS_DIR = os.environ.get('SCREENSHOTS_DIR', '/tmp/examguard_screenshots')
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+def token_fingerprint(value):
+    raw = str(value or '').encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()[:10]
+
+
 CONFIGURED_ADMIN_TOKEN = (os.environ.get('ADMIN_TOKEN') or '').strip()
 ADMIN_TOKEN = CONFIGURED_ADMIN_TOKEN or secrets.token_urlsafe(24)
 if not CONFIGURED_ADMIN_TOKEN:
     print(f'[ExamGuard] ADMIN_TOKEN tanımlı değil. Geçici öğretmen tokenı: {ADMIN_TOKEN}')
 else:
-    print(f'[ExamGuard] ADMIN_TOKEN yüklendi (uzunluk: {len(ADMIN_TOKEN)})')
+    print(
+        '[ExamGuard] ADMIN_TOKEN yüklendi '
+        f'(uzunluk: {len(ADMIN_TOKEN)}, parmak izi: {token_fingerprint(ADMIN_TOKEN)})'
+    )
 MAX_SCREENSHOT_BYTES = int(os.environ.get('MAX_SCREENSHOT_BYTES', 5 * 1024 * 1024))
 MAX_REQUEST_BYTES = int(os.environ.get('MAX_REQUEST_BYTES', 8 * 1024 * 1024))
 app.config['MAX_CONTENT_LENGTH'] = MAX_REQUEST_BYTES
@@ -637,6 +645,13 @@ def on_connect(auth=None):
         join_room('admins')
         socketio.emit('admin_authenticated', {}, to=request.sid)
     elif supplied_token:
+        print(
+            '[ExamGuard] Öğretmen tokenı eşleşmedi '
+            f'(gelen uzunluk: {len(supplied_token)}, '
+            f'gelen parmak izi: {token_fingerprint(supplied_token)}, '
+            f'beklenen uzunluk: {len(ADMIN_TOKEN)}, '
+            f'beklenen parmak izi: {token_fingerprint(ADMIN_TOKEN)})'
+        )
         socketio.emit(
             'admin_error',
             {'message': 'Öğretmen tokenı geçersiz.'},
