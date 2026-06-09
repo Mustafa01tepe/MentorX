@@ -7,7 +7,7 @@ from flask_socketio import SocketIO, join_room
 from flask_cors import CORS
 import base64, binascii, hashlib, os, re, secrets, threading, uuid
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from agent import GROQ_API_KEY, MODEL, analyze_async
 from policy import record_coding_vote, resolve_student_session
 from state_store import create_state_store
@@ -63,6 +63,9 @@ verify_attempts = defaultdict(deque)
 analysis_registry = {}
 analysis_registry_lock = threading.Lock()
 coding_vlm_votes = defaultdict(lambda: deque(maxlen=3))
+exam_timer = None
+exam_timer_lock = threading.Lock()
+exam_lifecycle_lock = threading.RLock()
 
 STATE_DB_PATH = os.environ.get(
     'STATE_DB_PATH',
@@ -151,6 +154,62 @@ def persist_state():
 
 def public_exam_state():
     return {k: v for k, v in exam_state.items() if k != 'exam_code'}
+
+def cancel_exam_timer():
+    global exam_timer
+    with exam_timer_lock:
+        timer = exam_timer
+        exam_timer = None
+    if timer:
+        timer.cancel()
+
+def finish_exam(reason='manual', expected_exam_id=None):
+    with exam_lifecycle_lock:
+        if expected_exam_id and exam_state.get('exam_id') != expected_exam_id:
+            return
+        cancel_exam_timer()
+        if not exam_state.get('active'):
+            return
+        exam_state['active'] = False
+        student_sessions.clear()
+        coding_vlm_votes.clear()
+        persist_state()
+        socketio.emit('exam_stopped', {'reason': reason})
+        print(f"[Sınav] Durduruldu — neden:{reason}")
+
+def schedule_exam_stop():
+    global exam_timer
+    cancel_exam_timer()
+    if not exam_state.get('active') or not exam_state.get('started_at'):
+        return
+
+    try:
+        started_at = datetime.fromisoformat(str(exam_state['started_at']).replace('Z', '+00:00'))
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        duration_minutes = max(0, float(exam_state.get('duration', 0)))
+    except (TypeError, ValueError):
+        print('[Sınav] Geçersiz başlangıç zamanı veya süre; otomatik bitiş kurulamadı')
+        return
+
+    exam_id = exam_state.get('exam_id')
+    end_at = started_at + timedelta(minutes=duration_minutes)
+    remaining_seconds = (end_at - datetime.now(timezone.utc)).total_seconds()
+    if remaining_seconds <= 0:
+        finish_exam('duration_expired', exam_id)
+        return
+
+    timer = threading.Timer(
+        remaining_seconds,
+        finish_exam,
+        kwargs={'reason': 'duration_expired', 'expected_exam_id': exam_id}
+    )
+    timer.daemon = True
+    with exam_timer_lock:
+        exam_timer = timer
+    timer.start()
+
+schedule_exam_stop()
 
 def get_bearer_token():
     auth = request.headers.get('Authorization', '')
@@ -603,19 +662,21 @@ def handle_start_exam(data):
         seen.add(u)
         cleaned.append(u)
 
-    exam_state.update({
-        'active':       True,
-        'exam_id':      str(uuid.uuid4()),
-        'mode':         data.get('mode', 'web'),
-        'duration':     data.get('duration', 90),
-        'started_at':   now_iso(),
-        'allowed_urls': cleaned,
-        'exam_code':    data.get('exam_code', '')
-    })
-    students.clear()
-    student_sessions.clear()
-    coding_vlm_votes.clear()
-    persist_state()
+    with exam_lifecycle_lock:
+        exam_state.update({
+            'active':       True,
+            'exam_id':      str(uuid.uuid4()),
+            'mode':         data.get('mode', 'web'),
+            'duration':     data.get('duration', 90),
+            'started_at':   now_iso(),
+            'allowed_urls': cleaned,
+            'exam_code':    data.get('exam_code', '')
+        })
+        students.clear()
+        student_sessions.clear()
+        coding_vlm_votes.clear()
+        persist_state()
+    schedule_exam_stop()
     socketio.emit('exam_started', public_exam_state())
     print(f"[Sınav] Başladı — mod:{exam_state['mode']} süre:{exam_state['duration']}dk")
     print(f"[Sınav] İzinli URL'ler: {exam_state['allowed_urls']}")
@@ -624,19 +685,16 @@ def handle_start_exam(data):
 def handle_stop_exam(_):
     if not require_admin_socket():
         return
-    exam_state['active'] = False
-    student_sessions.clear()
-    coding_vlm_votes.clear()
-    persist_state()
-    socketio.emit('exam_stopped', {})
-    print("[Sınav] Durduruldu")
+    finish_exam('manual')
 
 @socketio.on('update_duration')
 def handle_update_duration(data):
     if not require_admin_socket():
         return
-    exam_state['duration'] = data.get('duration', exam_state['duration'])
-    persist_state()
+    with exam_lifecycle_lock:
+        exam_state['duration'] = data.get('duration', exam_state['duration'])
+        persist_state()
+    schedule_exam_stop()
     socketio.emit('duration_updated', {'duration': exam_state['duration']})
 
 @socketio.on('change_mode')

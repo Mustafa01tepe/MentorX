@@ -12,6 +12,8 @@ let studentInfo = null;
 let sessionToken = null;
 let examId       = null;
 let examMode    = 'web';
+let examStartedAt = null;
+let examDuration = null;
 let lastUnfocusCaptureAt = 0;
 let backendConnected = false;
 let lastSyncError = '';
@@ -54,6 +56,16 @@ function ensureExamAlarms() {
   chrome.alarms.create('heartbeat', { periodInMinutes: 1 });
 }
 
+async function scheduleExamEndAlarm(startedAt, durationMinutes) {
+  await chrome.alarms.clear('examEnd');
+  if (!startedAt || durationMinutes === null || durationMinutes === undefined) return;
+  const startTime = new Date(startedAt).getTime();
+  const durationMs = Number(durationMinutes) * 60 * 1000;
+  const endTime = startTime + durationMs;
+  if (!Number.isFinite(endTime)) return;
+  chrome.alarms.create('examEnd', { when: Math.max(Date.now() + 1000, endTime) });
+}
+
 async function activateContentGuards() {
   const tabs = await chrome.tabs.query({});
   await Promise.all(tabs
@@ -82,12 +94,15 @@ async function enforceOpenTabs() {
 async function initializeGuard() {
   ensureStateCheckAlarm();
   const stored = await chrome.storage.local.get([
-    'examActive', 'studentInfo', 'sessionToken', 'examId'
+    'examActive', 'studentInfo', 'sessionToken', 'examId',
+    'examStartedAt', 'examDuration'
   ]);
   examActive = !!stored.examActive;
   studentInfo = stored.studentInfo || null;
   sessionToken = stored.sessionToken || null;
   examId = stored.examId || null;
+  examStartedAt = stored.examStartedAt || null;
+  examDuration = stored.examDuration ?? null;
   await checkExamState();
 }
 
@@ -96,16 +111,21 @@ async function clearLocalSession() {
   studentInfo = null;
   sessionToken = null;
   examId = null;
+  examStartedAt = null;
+  examDuration = null;
   allowedUrls = [];
   lastUnfocusCaptureAt = 0;
   await chrome.storage.local.set({
     examActive: false,
     studentInfo: null,
     sessionToken: null,
-    examId: null
+    examId: null,
+    examStartedAt: null,
+    examDuration: null
   });
   await chrome.alarms.clear('periodicScreenshot');
   await chrome.alarms.clear('heartbeat');
+  await chrome.alarms.clear('examEnd');
   ensureStateCheckAlarm();
 }
 
@@ -163,16 +183,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       studentInfo  = message.student;
       sessionToken = message.sessionToken;
       examId       = message.examId;
+      examStartedAt = message.started_at || null;
+      examDuration = message.duration ?? null;
       await chrome.storage.local.set({
         examActive: true,
         studentInfo: message.student,
         sessionToken,
-        examId
+        examId,
+        examStartedAt,
+        examDuration
       });
 
       await chrome.alarms.clearAll();
       ensureExamAlarms();
       ensureStateCheckAlarm();
+      await scheduleExamEndAlarm(examStartedAt, examDuration);
 
       const joined = await studentJoin(message.student);
       if (!joined) return { success: false };
@@ -200,6 +225,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_STATUS') {
     sendResponse({
       examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
+      examStartedAt, examDuration,
       backendConnected, lastSyncError
     });
   }
@@ -250,6 +276,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     checkExamState();
     return;
   }
+  if (alarm.name === 'examEnd') {
+    clearLocalSession();
+    return;
+  }
   if (!examActive) return;
   if (alarm.name === 'periodicScreenshot') captureAndSend('periodic');
   if (alarm.name === 'heartbeat')          sendHeartbeat();
@@ -286,6 +316,10 @@ async function checkExamState() {
     const remoteExamId = data.exam_id || null;
     examMode = data.mode || 'web';
     allowedUrls = data.allowed_urls || [];
+    examStartedAt = data.started_at || null;
+    examDuration = data.duration ?? null;
+    await chrome.storage.local.set({ examStartedAt, examDuration });
+    await scheduleExamEndAlarm(examStartedAt, examDuration);
 
     if (examId && remoteExamId && examId !== remoteExamId) {
       await clearLocalSession();

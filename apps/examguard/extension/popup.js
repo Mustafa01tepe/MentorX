@@ -103,7 +103,9 @@ document.getElementById('loginButton').addEventListener('click', async () => {
       allowed_urls: currentState?.allowed_urls || [],
       student: { name, id },
       sessionToken: data.sessionToken,
-      examId: data.examId
+      examId: data.examId,
+      started_at: currentState?.started_at,
+      duration: currentState?.duration
     }, (result) => {
       if (chrome.runtime.lastError) {
         error.textContent = chrome.runtime.lastError.message;
