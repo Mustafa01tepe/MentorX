@@ -101,9 +101,13 @@ GROQ_API_KEY=GROQ_ANAHTARINIZ
 MAX_SCREENSHOT_BYTES=5242880
 MAX_REQUEST_BYTES=8388608
 MAX_CONCURRENT_ANALYSES=3
+RAILPACK_PYTHON_VERSION=3.12
 ```
 
 Railway `PORT` değişkenini kendisi sağlar. Elle tanımlamayın.
+
+`RAILPACK_PYTHON_VERSION=3.12`, Eventlet ve Flask-Socket.IO için Python
+3.13 kaynaklı çalışma zamanı sorunlarını önlemek amacıyla kullanılır.
 
 PowerShell ile güçlü değerler üretmek için:
 
@@ -408,4 +412,3 @@ Kod değişikliğinden sonra:
 5. Eklenti dosyaları değiştiyse öğrenci cihazlarında eklentiyi yeniden
    yükleyin.
 6. Masaüstü ajanı değiştiyse öğrenci cihazlarındaki dosyayı güncelleyin.
-
