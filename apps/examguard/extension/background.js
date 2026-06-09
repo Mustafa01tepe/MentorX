@@ -60,6 +60,21 @@ async function activateContentGuards() {
     }).catch(() => {})));
 }
 
+async function enforceOpenTabs() {
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id) || !tab.url) continue;
+    if (
+      tab.url.startsWith('chrome://') ||
+      tab.url.startsWith('chrome-extension://') ||
+      tab.url.startsWith('about:')
+    ) {
+      continue;
+    }
+    await checkAndBlock(tab.id, tab.url);
+  }
+}
+
 async function initializeGuard() {
   ensureStateCheckAlarm();
   const stored = await chrome.storage.local.get([
@@ -95,6 +110,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     scanAIExtensions();
     studentJoin(message.student);
     activateContentGuards();
+    captureAndSend('periodic', 'Sınav girişi ilk kontrol');
+    enforceOpenTabs();
     sendResponse({ success: true });
   }
 
@@ -208,6 +225,8 @@ async function checkExamState() {
       ensureExamAlarms();
       scanAIExtensions();
       activateContentGuards();
+      captureAndSend('periodic', 'Oturum geri yüklendi');
+      enforceOpenTabs();
     }
 
   } catch (e) { /* backend kapalı, sorun değil */ }
@@ -386,7 +405,7 @@ async function captureAndSend(reason, details = '') {
       format: 'jpeg', quality: 75
     });
 
-    await fetch(`${BACKEND_URL}/screenshot`, {
+    const response = await fetch(`${BACKEND_URL}/screenshot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -406,6 +425,10 @@ async function captureAndSend(reason, details = '') {
         }
       })
     });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Screenshot HTTP ${response.status}: ${body}`);
+    }
   } catch (err) {
     console.error('[ExamGuard] Capture error:', err);
   }

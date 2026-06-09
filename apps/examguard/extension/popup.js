@@ -94,7 +94,17 @@ document.getElementById('loginButton').addEventListener('click', async () => {
       allowed_urls: currentState?.allowed_urls || [],
       student: { name, id },
       sessionToken: data.sessionToken
-    }, () => window.close());
+    }, (result) => {
+      if (chrome.runtime.lastError) {
+        error.textContent = chrome.runtime.lastError.message;
+        return;
+      }
+      if (!result?.success) {
+        error.textContent = 'Eklenti izleme modu başlatılamadı.';
+        return;
+      }
+      window.close();
+    });
   } catch {
     error.textContent = "Backend'e bağlanılamadı.";
   }
