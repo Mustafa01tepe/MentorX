@@ -37,7 +37,7 @@ login_pending     = False   # giriş ekranı açık mı
 tray_lock         = threading.Lock()
 
 # SocketIO client
-sio = socketio.Client(reconnection=True, reconnection_delay=3)
+sio = socketio.Client(reconnection=False)
 
 # ─────────────────────────────────────────
 # GİRİŞ EKRANI (Tkinter)
@@ -299,15 +299,13 @@ def ensure_login_prompt():
 def connect_to_backend():
     while running:
         try:
-            if not sio.connected:
-                sio.connect(
-                    BACKEND_URL,
-                    wait_timeout=15
-                )
-            while running and sio.connected:
-                time.sleep(1)
+            sio.connect(BACKEND_URL, wait_timeout=15)
+            sio.wait()
         except Exception as e:
             print(f'[Agent] Bağlantı hatası: {e}')
+        finally:
+            if sio.connected:
+                sio.disconnect()
         if running:
             time.sleep(5)
 
