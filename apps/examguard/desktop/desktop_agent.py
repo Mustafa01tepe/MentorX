@@ -155,6 +155,12 @@ def update_tray(color, tooltip):
         tray_icon.icon  = create_icon(color)
         tray_icon.title = tooltip
 
+def clear_student_session():
+    global student_info, session_token, login_pending
+    student_info = {}
+    session_token = ''
+    login_pending = False
+
 # ─────────────────────────────────────────
 # AKTİF PENCERE
 # ─────────────────────────────────────────
@@ -200,12 +206,15 @@ def take_screenshot_b64():
         return None
 
 def send_screenshot(reason):
+    if not session_token or not student_info:
+        ensure_login_prompt()
+        return
     ss = take_screenshot_b64()
     if not ss:
         return
     context = get_foreground_context()
     try:
-        requests.post(f'{BACKEND_URL}/screenshot', headers={
+        response = requests.post(f'{BACKEND_URL}/screenshot', headers={
             'Authorization': f'Bearer {session_token}'
         }, json={
             'screenshot': ss,
@@ -218,6 +227,11 @@ def send_screenshot(reason):
             'mode':       exam_mode,
             'clientContext': context
         }, timeout=10)
+        if response.status_code == 401:
+            clear_student_session()
+            update_tray('gray', 'ExamGuard — Oturum Geçersiz')
+            ensure_login_prompt()
+        response.raise_for_status()
         print(f'[Agent] SS gönderildi: {reason}')
     except Exception as e:
         print(f'[Agent] Gönderme hatası: {e}')
@@ -249,11 +263,9 @@ def on_exam_started(data):
 
 @sio.on('exam_stopped')
 def on_exam_stopped(_=None):
-    global exam_active, student_info, session_token, login_pending
+    global exam_active
     exam_active   = False
-    student_info  = {}
-    session_token = ''
-    login_pending = False
+    clear_student_session()
     update_tray('gray', 'ExamGuard — Bekliyor')
     print('[Agent] Sınav durduruldu')
 
@@ -296,6 +308,8 @@ def fetch_state():
         data       = requests.get(f'{BACKEND_URL}/state', timeout=5).json()
         exam_active = data.get('active', False)
         exam_mode   = data.get('mode', 'web')
+        if not exam_active:
+            clear_student_session()
         return True
     except Exception:
         return False

@@ -9,3 +9,4 @@ requests
 gunicorn==22.0.0
 eventlet==0.36.1
 python-dotenv==1.0.0
+psycopg[binary]>=3.2,<4

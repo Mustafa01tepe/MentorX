@@ -61,6 +61,10 @@ klasörde tutun.
 
 ## ExamGuard
 
+Ayrıntılı Railway ve PostgreSQL kurulum adımları:
+
+[ExamGuard Railway Kurulum Kılavuzu](apps/examguard/RAILWAY_KURULUM_KILAVUZU.md)
+
 Backend:
 
 ```powershell
@@ -71,6 +75,15 @@ python server.py
 ```
 
 Öğretmen paneli varsayılan olarak `http://localhost:5000` adresindedir.
+
+Üretimde backend durumunu Railway PostgreSQL üzerinde tutmak için projeye
+bir PostgreSQL servisi ekleyin ve backend servisinde şu değişkeni tanımlayın:
+
+```text
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+```
+
+`DATABASE_URL` yoksa yalnızca yerel geliştirme için SQLite kullanılır.
 
 Windows masaüstü ajanı:
 

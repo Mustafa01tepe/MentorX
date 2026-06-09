@@ -4,13 +4,26 @@
 (function () {
   'use strict';
 
-  // Sadece aktif sınav varsa çalış
+  if (globalThis.__examGuardContentLoaded) return;
+  globalThis.__examGuardContentLoaded = true;
+
   chrome.storage.local.get(['examActive'], ({ examActive }) => {
-    if (!examActive) return;
-    initGuard();
+    if (examActive) initGuard();
+  });
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local' || !changes.examActive) return;
+    if (changes.examActive.newValue === true) initGuard();
+    if (changes.examActive.newValue === false) deactivateGuard();
   });
 
   function initGuard() {
+    globalThis.__examGuardActive = true;
+    if (globalThis.__examGuardInitialized) {
+      showBadge();
+      return;
+    }
+    globalThis.__examGuardInitialized = true;
     // ── Sağ tık menüsünü engelle ──
     document.addEventListener('contextmenu', block, true);
 
@@ -21,6 +34,7 @@
 
     // ── Klavye kısayolları engelle ──
     document.addEventListener('keydown', (e) => {
+      if (!globalThis.__examGuardActive) return;
       const ctrl = e.ctrlKey || e.metaKey;
 
       // Ctrl+C / X / V / A / U / S / P
@@ -51,6 +65,7 @@
 
     // ── Seçim engelle (isteğe bağlı) ──
     document.addEventListener('selectstart', (e) => {
+      if (!globalThis.__examGuardActive) return;
       // Input ve textarea içinde izin ver
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
       // Sınav cevap alanlarında izin ver
@@ -60,7 +75,7 @@
 
     // ── Sayfa görünürlük değişimi ──
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
+      if (globalThis.__examGuardActive && document.hidden) {
         chrome.runtime.sendMessage({ type: 'PAGE_HIDDEN' });
       }
     });
@@ -69,7 +84,13 @@
     showBadge();
   }
 
+  function deactivateGuard() {
+    globalThis.__examGuardActive = false;
+    document.getElementById('examguard-badge')?.remove();
+  }
+
   function block(e) {
+    if (!globalThis.__examGuardActive) return true;
     e.preventDefault();
     e.stopPropagation();
     return false;
@@ -77,6 +98,11 @@
 
   // Sağ alt köşede küçük bir rozet göster
   function showBadge() {
+    if (document.getElementById('examguard-badge')) return;
+    if (!document.body) {
+      document.addEventListener('DOMContentLoaded', showBadge, { once: true });
+      return;
+    }
     const badge = document.createElement('div');
     badge.id = 'examguard-badge';
     badge.innerHTML = '🛡 ExamGuard Aktif';

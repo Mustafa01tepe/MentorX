@@ -1,0 +1,126 @@
+import json
+import os
+import sqlite3
+import threading
+
+
+def build_payload(exam_state, students, student_sessions):
+    return {
+        "exam_state": exam_state,
+        "students": students,
+        "student_sessions": student_sessions,
+    }
+
+
+class SQLiteStateStore:
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
+        self._connection = sqlite3.connect(path, check_same_thread=False)
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload TEXT NOT NULL
+            )
+            """
+        )
+        self._connection.commit()
+
+    def load(self):
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload FROM app_state WHERE id = 1"
+            ).fetchone()
+        if not row:
+            return {}
+        try:
+            data = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save(self, exam_state, students, student_sessions):
+        payload = json.dumps(
+            build_payload(exam_state, students, student_sessions),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self._lock:
+            self._connection.execute(
+                """
+                INSERT INTO app_state (id, payload)
+                VALUES (1, ?)
+                ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+                """,
+                (payload,),
+            )
+            self._connection.commit()
+
+    def close(self):
+        with self._lock:
+            self._connection.close()
+
+
+class PostgresStateStore:
+    def __init__(self, database_url):
+        try:
+            import psycopg
+            from psycopg.types.json import Jsonb
+        except ImportError as exc:
+            raise RuntimeError(
+                "PostgreSQL için psycopg paketi kurulu olmalıdır."
+            ) from exc
+
+        self.database_url = database_url
+        self._psycopg = psycopg
+        self._jsonb = Jsonb
+        self._initialize()
+
+    def _connect(self):
+        return self._psycopg.connect(self.database_url, autocommit=True)
+
+    def _initialize(self):
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_state (
+                    id SMALLINT PRIMARY KEY CHECK (id = 1),
+                    payload JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+
+    def load(self):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM app_state WHERE id = 1"
+            ).fetchone()
+        if not row:
+            return {}
+        return row[0] if isinstance(row[0], dict) else {}
+
+    def save(self, exam_state, students, student_sessions):
+        payload = build_payload(exam_state, students, student_sessions)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO app_state (id, payload, updated_at)
+                VALUES (1, %s, NOW())
+                ON CONFLICT (id) DO UPDATE
+                SET payload = EXCLUDED.payload, updated_at = NOW()
+                """,
+                (self._jsonb(payload),),
+            )
+
+    def close(self):
+        return None
+
+
+def create_state_store(database_url="", sqlite_path="examguard_state.sqlite3"):
+    if database_url:
+        return PostgresStateStore(database_url)
+    return SQLiteStateStore(sqlite_path)

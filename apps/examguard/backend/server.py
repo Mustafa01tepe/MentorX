@@ -12,6 +12,8 @@ import base64, binascii, os, re, secrets, threading, uuid
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from agent import analyze_async
+from policy import record_coding_vote, resolve_student_session
+from state_store import create_state_store
 
 app = Flask(__name__, static_folder='dashboard')
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_urlsafe(32)
@@ -54,6 +56,24 @@ verify_attempts = defaultdict(deque)
 analysis_registry = {}
 analysis_registry_lock = threading.Lock()
 coding_vlm_votes = defaultdict(lambda: deque(maxlen=3))
+
+STATE_DB_PATH = os.environ.get(
+    'STATE_DB_PATH',
+    os.path.join(os.path.dirname(SCREENSHOTS_DIR), 'examguard_state.sqlite3')
+)
+DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+state_store = create_state_store(
+    database_url=DATABASE_URL,
+    sqlite_path=STATE_DB_PATH
+)
+print(
+    '[ExamGuard] Durum deposu: '
+    + ('PostgreSQL' if DATABASE_URL else f'SQLite ({STATE_DB_PATH})')
+)
+persisted_state = state_store.load()
+exam_state.update(persisted_state.get('exam_state') or {})
+students.update(persisted_state.get('students') or {})
+student_sessions.update(persisted_state.get('student_sessions') or {})
 
 ANALYSIS_TIMEOUT_SECONDS = 20
 
@@ -104,6 +124,9 @@ EVENT_LABELS = {
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
+def persist_state():
+    state_store.save(exam_state, students, student_sessions)
+
 def public_exam_state():
     return {k: v for k, v in exam_state.items() if k != 'exam_code'}
 
@@ -115,11 +138,8 @@ def get_bearer_token():
 
 def authenticated_student(data):
     token = get_bearer_token() or (data or {}).get('sessionToken', '')
-    sid = student_sessions.get(token)
     claimed_sid = ((data or {}).get('student') or {}).get('id', '')
-    if not sid or (claimed_sid and claimed_sid != sid):
-        return None
-    return sid
+    return resolve_student_session(token, claimed_sid, student_sessions)
 
 def require_admin_socket():
     if request.sid not in admin_sockets:
@@ -141,6 +161,7 @@ def emit_students():
 def increase_alert_count(sid: str):
     if sid in students:
         students[sid]['alertCount'] = students[sid].get('alertCount', 0) + 1
+        persist_state()
         emit_students()
 
 def get_text_haystack(*parts):
@@ -237,6 +258,7 @@ def student_join():
         'alertCount':  students.get(sid, {}).get('alertCount', 0),
         'status':      'active'
     }
+    persist_state()
     emit_students()
     print(f"[+] {student.get('name')} bağlandı")
     return jsonify({'success': True})
@@ -250,6 +272,7 @@ def student_leave():
     if sid in students:
         students[sid]['status']   = 'left'
         students[sid]['lastSeen'] = data.get('timestamp', now_iso())
+        persist_state()
     emit_students()
     return jsonify({'success': True})
 
@@ -262,6 +285,7 @@ def student_heartbeat():
     if sid in students:
         students[sid]['lastSeen'] = data.get('timestamp', now_iso())
         students[sid]['status']   = 'active'
+        persist_state()
         emit_students()
     return jsonify({'success': True})
 
@@ -311,6 +335,7 @@ def student_verify():
         'alertCount':  students.get(sid, {}).get('alertCount', 0),
         'status':      'active'
     }
+    persist_state()
     emit_students()
     print(f'[+] Doğrulandı: {name} ({sid})')
     return jsonify({'success': True, 'sessionToken': session_token})
@@ -340,6 +365,7 @@ def receive_screenshot():
     if sid in students:
         students[sid]['lastSeen'] = timestamp
         students[sid]['status']   = 'active'
+        persist_state()
 
     safe_ts = safe_filename_part(timestamp, now_iso().replace(':', '-'))
     safe_sid = safe_filename_part(sid, 'unknown')
@@ -439,8 +465,8 @@ def receive_screenshot():
         # Kodlama modu periyodiklerde 2/3 doğrulama filtresi.
         if mode == 'coding' and reason in ('desktop_periodic', 'periodic'):
             votes = coding_vlm_votes[sid]
-            votes.append(raw_suspicious)
-            if raw_suspicious and (len(votes) < 3 or sum(1 for v in votes if v) < 2):
+            confirmed_suspicious = record_coding_vote(votes, raw_suspicious)
+            if raw_suspicious and not confirmed_suspicious:
                 analysis_status = 'uncertain'
                 verdict = 'BELİRSİZ'
                 reason_text = f"{reason_text} (2/3 kuralı: tekrar teyit bekleniyor)"
@@ -518,6 +544,8 @@ def handle_start_exam(data):
     })
     students.clear()
     student_sessions.clear()
+    coding_vlm_votes.clear()
+    persist_state()
     socketio.emit('exam_started', public_exam_state())
     print(f"[Sınav] Başladı — mod:{exam_state['mode']} süre:{exam_state['duration']}dk")
     print(f"[Sınav] İzinli URL'ler: {exam_state['allowed_urls']}")
@@ -528,6 +556,8 @@ def handle_stop_exam(_):
         return
     exam_state['active'] = False
     student_sessions.clear()
+    coding_vlm_votes.clear()
+    persist_state()
     socketio.emit('exam_stopped', {})
     print("[Sınav] Durduruldu")
 
@@ -536,6 +566,7 @@ def handle_update_duration(data):
     if not require_admin_socket():
         return
     exam_state['duration'] = data.get('duration', exam_state['duration'])
+    persist_state()
     socketio.emit('duration_updated', {'duration': exam_state['duration']})
 
 @socketio.on('change_mode')
@@ -543,6 +574,7 @@ def handle_change_mode(data):
     if not require_admin_socket():
         return
     exam_state['mode'] = data.get('mode', 'web')
+    persist_state()
     socketio.emit('mode_changed', {'mode': exam_state['mode']})
 
 @socketio.on('update_urls')
@@ -561,6 +593,7 @@ def handle_update_urls(data):
         seen.add(u)
         cleaned.append(u)
     exam_state['allowed_urls'] = cleaned
+    persist_state()
     socketio.emit('urls_updated', {'allowed_urls': exam_state['allowed_urls']})
     print(f"[Sınav] URL'ler güncellendi: {exam_state['allowed_urls']}")
 
@@ -570,6 +603,7 @@ def handle_update_exam_code(data):
         return
     code = (data.get('exam_code') or '').strip().upper()
     exam_state['exam_code'] = code
+    persist_state()
     socketio.emit('exam_code_updated', {'exam_code': exam_state['exam_code']})
     print(f"[Sınav] Kod güncellendi: {exam_state['exam_code']}")
 

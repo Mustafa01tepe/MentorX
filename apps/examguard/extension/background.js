@@ -50,6 +50,16 @@ function ensureExamAlarms() {
   chrome.alarms.create('heartbeat', { periodInMinutes: 1 });
 }
 
+async function activateContentGuards() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(tabs
+    .filter(tab => Number.isInteger(tab.id))
+    .map(tab => chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      files: ['content.js']
+    }).catch(() => {})));
+}
+
 async function initializeGuard() {
   ensureStateCheckAlarm();
   const stored = await chrome.storage.local.get([
@@ -84,6 +94,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     scanAIExtensions();
     studentJoin(message.student);
+    activateContentGuards();
     sendResponse({ success: true });
   }
 
@@ -196,6 +207,7 @@ async function checkExamState() {
       chrome.storage.local.set({ examActive: true });
       ensureExamAlarms();
       scanAIExtensions();
+      activateContentGuards();
     }
 
   } catch (e) { /* backend kapalı, sorun değil */ }
