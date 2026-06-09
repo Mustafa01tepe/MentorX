@@ -66,10 +66,16 @@
     // ── Seçim engelle (isteğe bağlı) ──
     document.addEventListener('selectstart', (e) => {
       if (!globalThis.__examGuardActive) return;
+      const target = (
+        e.target &&
+        typeof e.target.tagName === 'string' &&
+        typeof e.target.closest === 'function'
+      ) ? e.target : null;
+      if (!target) return;
       // Input ve textarea içinde izin ver
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
       // Sınav cevap alanlarında izin ver
-      if (e.target.closest('.qtype_essay_response, .answer, .formulation')) return;
+      if (target.closest('.qtype_essay_response, .answer, .formulation')) return;
       e.preventDefault();
     }, true);
 

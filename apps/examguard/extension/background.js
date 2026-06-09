@@ -434,7 +434,26 @@ async function checkAndBlock(tabId, url) {
   if (isAllowed(url)) return;
   await captureAndSend('tab_switch', url);
   const target = allowedUrls[0] || 'https://moodle.erzurum.edu.tr/';
-  chrome.tabs.update(tabId, { url: target });
+  await retryTabOperation(
+    () => chrome.tabs.update(tabId, { url: target }),
+    'Sekme sınav sayfasına yönlendirilemedi'
+  );
+}
+
+async function retryTabOperation(operation, label, attempts = 3) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      const retryable = String(error?.message || '').includes('Tabs cannot be edited');
+      if (!retryable || attempt === attempts) {
+        console.error(`[ExamGuard] ${label}:`, error);
+        return null;
+      }
+      await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+    }
+  }
+  return null;
 }
 
 async function captureUnfocusEvidence(details = '') {
@@ -497,7 +516,12 @@ function scheduleWindowUnfocusCapture() {
 chrome.tabs.onCreated.addListener(async (tab) => {
   if (!examActive) return;
   await captureAndSend('new_tab_attempt', tab.pendingUrl || tab.url || 'yeni sekme');
-  setTimeout(() => chrome.tabs.remove(tab.id).catch(() => {}), 200);
+  setTimeout(() => {
+    retryTabOperation(
+      () => chrome.tabs.remove(tab.id),
+      'Yeni sekme kapatılamadı'
+    );
+  }, 300);
 });
 
 // ─────────────────────────────────────────
@@ -508,7 +532,7 @@ chrome.windows.onCreated.addListener(async (win) => {
   // Extension popup pencerelerini atla
   if (win.type === 'popup') return;
   await captureAndSend('new_tab_attempt', 'Yeni pencere açma teşebbüsü');
-  setTimeout(() => chrome.windows.remove(win.id).catch(() => {}), 200);
+  setTimeout(() => chrome.windows.remove(win.id).catch(() => {}), 300);
 });
 
 // ─────────────────────────────────────────
@@ -608,22 +632,67 @@ function isAllowed(url) {
 // ─────────────────────────────────────────
 // EKRAN GÖRÜNTÜSÜ AL + GÖNDER
 // ─────────────────────────────────────────
+function isCapturableTab(tab) {
+  return (
+    tab &&
+    Number.isInteger(tab.id) &&
+    Number.isInteger(tab.windowId) &&
+    /^https?:\/\//i.test(tab.url || '')
+  );
+}
+
+async function findCapturableActiveTab() {
+  const windows = await chrome.windows.getAll({
+    populate: true,
+    windowTypes: ['normal']
+  });
+  const ordered = windows.sort((a, b) => Number(b.focused) - Number(a.focused));
+  for (const window of ordered) {
+    const activeTab = (window.tabs || []).find(tab => tab.active && isCapturableTab(tab));
+    if (activeTab) return activeTab;
+  }
+  const tabs = await chrome.tabs.query({});
+  return tabs.find(tab => tab.active && isCapturableTab(tab)) || null;
+}
+
+async function captureTabWithRetry(windowId, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await chrome.tabs.captureVisibleTab(windowId, {
+        format: 'jpeg',
+        quality: 75
+      });
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || '');
+      const retryable = (
+        message.includes('Tabs cannot be edited') ||
+        message.includes('activeTab permission is not in effect')
+      );
+      if (!retryable || attempt === attempts) break;
+      await new Promise(resolve => setTimeout(resolve, 300 * attempt));
+    }
+  }
+  throw lastError || new Error('Ekran görüntüsü alınamadı.');
+}
+
 async function captureAndSend(reason, details = '') {
   try {
-    // Service worker bağlamında odak kaybında "currentWindow" boş kalabilir.
-    // Bu yüzden son odaklı pencereden aktif tab alınır.
-    let [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const activeTab = await findCapturableActiveTab();
     if (!activeTab) {
-      [activeTab] = await chrome.tabs.query({ active: true });
+      await sendCaptureFailureAlert(
+        reason,
+        details,
+        null,
+        new Error('Erişilebilir HTTP/HTTPS sekmesi bulunamadı.')
+      );
+      return;
     }
-    if (!activeTab) return;
 
-    const targetWindowId = Number.isInteger(activeTab.windowId) ? activeTab.windowId : undefined;
     let screenshot;
     try {
-      screenshot = await chrome.tabs.captureVisibleTab(targetWindowId, {
-        format: 'jpeg', quality: 75
-      });
+      screenshot = await captureTabWithRetry(activeTab.windowId);
       lastSuccessfulScreenshot = screenshot;
     } catch (captureError) {
       if (reason === 'window_unfocused' && lastSuccessfulScreenshot) {
