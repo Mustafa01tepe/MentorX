@@ -50,6 +50,7 @@ class ExamGuardServerTests(unittest.TestCase):
         })
         server.students.clear()
         server.student_sessions.clear()
+        server.student_pairings.clear()
         server.students["42"] = {
             "id": "42",
             "name": "Ada",
@@ -60,6 +61,53 @@ class ExamGuardServerTests(unittest.TestCase):
         }
         server.student_sessions["student-token"] = "42"
         self.client = server.app.test_client()
+
+    def test_desktop_pairing_creates_separate_extension_session(self):
+        create_response = self.client.post(
+            "/student/pairing/create",
+            headers={"Authorization": "Bearer student-token"},
+        )
+
+        self.assertEqual(create_response.status_code, 200)
+        pairing_code = create_response.get_json()["pairingCode"]
+
+        exchange_response = self.client.post(
+            "/student/pairing/exchange",
+            json={"pairingCode": pairing_code},
+        )
+        payload = exchange_response.get_json()
+
+        self.assertEqual(exchange_response.status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertNotEqual(payload["sessionToken"], "student-token")
+        self.assertEqual(payload["student"], {"id": "42", "name": "Ada"})
+
+        session_response = self.client.get(
+            "/student/session",
+            headers={
+                "Authorization": f"Bearer {payload['sessionToken']}"
+            },
+        )
+        self.assertEqual(session_response.status_code, 200)
+        self.assertEqual(session_response.get_json()["studentId"], "42")
+
+    def test_desktop_pairing_is_single_use(self):
+        pairing_code = self.client.post(
+            "/student/pairing/create",
+            headers={"Authorization": "Bearer student-token"},
+        ).get_json()["pairingCode"]
+
+        first = self.client.post(
+            "/student/pairing/exchange",
+            json={"pairingCode": pairing_code},
+        )
+        second = self.client.post(
+            "/student/pairing/exchange",
+            json={"pairingCode": pairing_code},
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 410)
 
     def test_student_code_is_case_insensitive(self):
         response = self.client.post(

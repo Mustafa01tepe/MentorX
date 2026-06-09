@@ -14,6 +14,7 @@ import win32gui
 import win32process
 import psutil
 from PIL import Image, ImageDraw
+from session_bridge import PairingBridge
 
 # ─────────────────────────────────────────
 # CONFIG
@@ -23,6 +24,7 @@ STATE_POLL_INTERVAL = 5
 CODING_SS_INTERVAL  = 30
 HEARTBEAT_INTERVAL  = 30
 UNFOCUS_WAIT        = 3
+PAIRING_REFRESH_SECONDS = 90
 
 # ─────────────────────────────────────────
 # GLOBAL STATE
@@ -34,11 +36,13 @@ student_info      = {}
 session_token     = ''
 last_coding_ss    = 0
 last_heartbeat    = 0
+last_pairing_refresh = 0
 chrome_unfocused_since = None
 chrome_unfocus_reported = False
 tray_icon         = None
 login_pending     = False   # giriş ekranı açık mı
 tray_lock         = threading.Lock()
+pairing_bridge    = PairingBridge()
 
 # SocketIO client
 sio = socketio.Client(reconnection=False)
@@ -116,6 +120,7 @@ def show_login():
             if data.get('success'):
                 student_info.update({'name': name, 'id': sid})
                 session_token = data.get('sessionToken', '')
+                refresh_extension_pairing()
                 result['success'] = True
                 root.destroy()
             else:
@@ -166,10 +171,38 @@ def update_tray(color, tooltip):
         print(f'[Agent] Tray güncelleme hatası: {e}')
 
 def clear_student_session():
-    global student_info, session_token, login_pending
+    global student_info, session_token, login_pending, last_pairing_refresh
     student_info = {}
     session_token = ''
     login_pending = False
+    last_pairing_refresh = 0
+    pairing_bridge.clear()
+
+def refresh_extension_pairing():
+    global last_pairing_refresh
+    if not session_token or not student_info:
+        return False
+    try:
+        response = requests.post(
+            f'{BACKEND_URL}/student/pairing/create',
+            headers={'Authorization': f'Bearer {session_token}'},
+            timeout=5,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get('success'):
+            return False
+        pairing_bridge.update(
+            data.get('pairingCode', ''),
+            data.get('examId'),
+            data.get('expiresAt'),
+        )
+        last_pairing_refresh = time.time()
+        print('[Agent] Chrome eklentisi için tek giriş eşleştirmesi hazır')
+        return True
+    except Exception as exc:
+        print(f'[Agent] Eklenti eşleştirme hatası: {exc}')
+        return False
 
 # ─────────────────────────────────────────
 # AKTİF PENCERE
@@ -352,7 +385,7 @@ def fetch_state():
 # ANA DÖNGÜ
 # ─────────────────────────────────────────
 def monitoring_loop():
-    global last_coding_ss, last_heartbeat, running
+    global last_coding_ss, last_heartbeat, last_pairing_refresh, running
     global chrome_unfocused_since, chrome_unfocus_reported
 
     last_state_check = 0
@@ -378,6 +411,12 @@ def monitoring_loop():
             continue
 
         ensure_login_prompt()
+
+        if (
+            session_token
+            and now - last_pairing_refresh >= PAIRING_REFRESH_SECONDS
+        ):
+            refresh_extension_pairing()
 
         if now - last_heartbeat >= HEARTBEAT_INTERVAL:
             send_heartbeat()
@@ -416,6 +455,7 @@ def on_quit(icon, item):
     running = False
     if sio.connected:
         sio.disconnect()
+    pairing_bridge.stop()
     icon.stop()
 
 def setup_tray():
@@ -439,6 +479,9 @@ if __name__ == '__main__':
 
     # WebSocket bağlantısı
     threading.Thread(target=connect_to_backend, daemon=True).start()
+
+    # Chrome eklentisinin tek giriş oturumunu alacağı localhost köprüsü
+    threading.Thread(target=pairing_bridge.serve_forever, daemon=True).start()
 
     # İzleme thread'i
     threading.Thread(target=monitoring_loop, daemon=True).start()

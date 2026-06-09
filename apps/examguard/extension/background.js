@@ -5,6 +5,8 @@ const SCREENSHOT_INTERVAL_SECONDS = 30;
 const STATE_CHECK_INTERVAL_SECONDS = 30;
 const UNFOCUS_CAPTURE_DELAY_MS = 3000;
 const UNFOCUS_CAPTURE_COOLDOWN_MS = 7000;
+const DESKTOP_BRIDGE_URL = 'http://127.0.0.1:17843/session';
+const DESKTOP_PAIRING_POLL_MS = 3000;
 
 // Hoca dashboard'dan gönderir, başlangıçta boş
 let allowedUrls = [];
@@ -23,6 +25,7 @@ const pageUnfocusTimers = new Map();
 let backendConnected = false;
 let lastSyncError = '';
 let syncInProgress = null;
+let pairingInProgress = null;
 
 const AI_EXTENSION_BLACKLIST = [
   { id: 'camppjleccjaphfdbohjdohecfnoikec', name: 'Merlin AI' },
@@ -176,6 +179,111 @@ async function validateStudentSession(expectedExamId) {
   );
 }
 
+async function startExamSession(message) {
+  examActive = true;
+  examMode = message.mode || 'web';
+  allowedUrls = message.allowed_urls || [];
+  studentInfo = message.student;
+  sessionToken = message.sessionToken;
+  examId = message.examId;
+  examStartedAt = message.started_at || null;
+  examDuration = message.duration ?? null;
+  remoteExamActive = true;
+  await chrome.storage.local.set({
+    examActive: true,
+    studentInfo,
+    sessionToken,
+    examId,
+    examStartedAt,
+    examDuration
+  });
+
+  await chrome.alarms.clearAll();
+  ensureExamAlarms();
+  ensureStateCheckAlarm();
+  await scheduleExamEndAlarm(examStartedAt, examDuration);
+
+  const joined = await studentJoin(studentInfo);
+  if (!joined) {
+    await clearLocalSession();
+    return { success: false };
+  }
+
+  await scanAIExtensions();
+  await activateContentGuards();
+  await captureAndSend('periodic', 'Sınav girişi ilk kontrol');
+  await enforceOpenTabs();
+  await updateActionState();
+  return { success: true };
+}
+
+async function tryDesktopPairing(remoteState = null) {
+  if (!remoteExamActive || examActive || sessionToken) return false;
+  if (pairingInProgress) return pairingInProgress;
+
+  pairingInProgress = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    try {
+      const bridgeResponse = await fetch(DESKTOP_BRIDGE_URL, {
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      if (bridgeResponse.status === 204 || !bridgeResponse.ok) return false;
+      const pairing = await bridgeResponse.json();
+      const expectedExamId = remoteState?.exam_id || examId;
+      if (
+        !pairing.pairingCode ||
+        (expectedExamId && pairing.examId !== expectedExamId)
+      ) {
+        return false;
+      }
+
+      const exchangeResponse = await fetch(
+        `${BACKEND_URL}/student/pairing/exchange`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pairingCode: pairing.pairingCode })
+        }
+      );
+      if (!exchangeResponse.ok) return false;
+      const exchange = await exchangeResponse.json();
+      if (!exchange.success || !exchange.sessionToken || !exchange.student) {
+        return false;
+      }
+
+      const state = remoteState || {};
+      const result = await startExamSession({
+        student: exchange.student,
+        sessionToken: exchange.sessionToken,
+        examId: exchange.examId,
+        mode: state.mode || examMode,
+        allowed_urls: state.allowed_urls || allowedUrls,
+        started_at: state.started_at || examStartedAt,
+        duration: state.duration ?? examDuration
+      });
+      if (result.success) {
+        console.log('[ExamGuard] Masaüstü ajanı ile tek giriş tamamlandı');
+      }
+      return result.success;
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        console.debug('[ExamGuard] Masaüstü eşleştirmesi bekleniyor:', error);
+      }
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+
+  try {
+    return await pairingInProgress;
+  } finally {
+    pairingInProgress = null;
+  }
+}
+
 async function syncWithBackend() {
   if (syncInProgress) return syncInProgress;
   syncInProgress = (async () => {
@@ -208,40 +316,7 @@ async function syncWithBackend() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'START_EXAM') {
-    (async () => {
-      examActive   = true;
-      examMode     = message.mode || 'web';
-      allowedUrls  = message.allowed_urls || [];
-      studentInfo  = message.student;
-      sessionToken = message.sessionToken;
-      examId       = message.examId;
-      examStartedAt = message.started_at || null;
-      examDuration = message.duration ?? null;
-      remoteExamActive = true;
-      await chrome.storage.local.set({
-        examActive: true,
-        studentInfo: message.student,
-        sessionToken,
-        examId,
-        examStartedAt,
-        examDuration
-      });
-
-      await chrome.alarms.clearAll();
-      ensureExamAlarms();
-      ensureStateCheckAlarm();
-      await scheduleExamEndAlarm(examStartedAt, examDuration);
-
-      const joined = await studentJoin(message.student);
-      if (!joined) return { success: false };
-
-      await scanAIExtensions();
-      await activateContentGuards();
-      await captureAndSend('periodic', 'Sınav girişi ilk kontrol');
-      await enforceOpenTabs();
-      await updateActionState();
-      return { success: true };
-    })()
+    startExamSession(message)
       .then(sendResponse)
       .catch((error) => {
         console.error('[ExamGuard] Start session error:', error);
@@ -377,6 +452,10 @@ async function checkExamState() {
       }
     }
 
+    if (!examActive && !sessionToken) {
+      await tryDesktopPairing(data);
+    }
+
     // Backend başladı, mod veya URL değiştiyse güncelle
     if (data.active && examActive) {
       ensureExamAlarms();
@@ -402,6 +481,12 @@ async function checkExamState() {
     console.error('[ExamGuard] State sync error:', e);
   }
 }
+
+setInterval(() => {
+  if (remoteExamActive && !examActive && !sessionToken) {
+    tryDesktopPairing();
+  }
+}, DESKTOP_PAIRING_POLL_MS);
 
 // ─────────────────────────────────────────
 // SEKME DEĞİŞİMİ (sekmeler arası)

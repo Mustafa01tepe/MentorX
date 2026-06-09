@@ -61,10 +61,12 @@ exam_state = {
 # ── Öğrenci kayıtları ──
 students = {}
 student_sessions = {}
+student_pairings = {}
 admin_sockets = set()
 verify_attempts = defaultdict(deque)
 analysis_registry = {}
 analysis_registry_lock = threading.Lock()
+student_pairings_lock = threading.Lock()
 coding_vlm_votes = defaultdict(lambda: deque(maxlen=3))
 exam_timer = None
 exam_timer_lock = threading.Lock()
@@ -117,6 +119,7 @@ student_sessions.update(persisted_state.get('student_sessions') or {})
 
 ANALYSIS_TIMEOUT_SECONDS = 20
 STUDENT_STALE_SECONDS = int(os.environ.get('STUDENT_STALE_SECONDS', '90'))
+PAIRING_TTL_SECONDS = int(os.environ.get('PAIRING_TTL_SECONDS', '120'))
 
 DIRECT_SUSPICIOUS_REASONS = {
     'tab_switch',
@@ -188,6 +191,8 @@ def finish_exam(reason='manual', expected_exam_id=None):
             return
         exam_state['active'] = False
         student_sessions.clear()
+        with student_pairings_lock:
+            student_pairings.clear()
         coding_vlm_votes.clear()
         persist_state()
         socketio.emit('exam_stopped', {'reason': reason})
@@ -237,6 +242,15 @@ def authenticated_student(data):
     token = get_bearer_token() or (data or {}).get('sessionToken', '')
     claimed_sid = ((data or {}).get('student') or {}).get('id', '')
     return resolve_student_session(token, claimed_sid, student_sessions)
+
+def cleanup_expired_pairings(current_time=None):
+    now = current_time or datetime.now(timezone.utc).timestamp()
+    expired = [
+        code for code, pairing in student_pairings.items()
+        if pairing.get('expiresAt', 0) <= now
+    ]
+    for code in expired:
+        student_pairings.pop(code, None)
 
 def require_admin_socket():
     if request.sid not in admin_sockets:
@@ -499,6 +513,87 @@ def student_session_status():
         'studentId': sid,
         'examId': exam_state.get('exam_id'),
         'examActive': bool(exam_state.get('active')),
+    })
+
+@app.route('/student/pairing/create', methods=['POST'])
+def create_student_pairing():
+    sid = authenticated_student({})
+    if not sid:
+        return jsonify({
+            'success': False,
+            'message': 'Geçersiz öğrenci oturumu.'
+        }), 401
+    if not exam_state.get('active'):
+        return jsonify({
+            'success': False,
+            'message': 'Aktif sınav bulunamadı.'
+        }), 409
+
+    pairing_code = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc).timestamp() + PAIRING_TTL_SECONDS
+    with student_pairings_lock:
+        cleanup_expired_pairings()
+        student_pairings[pairing_code] = {
+            'sid': sid,
+            'examId': exam_state.get('exam_id'),
+            'expiresAt': expires_at,
+        }
+
+    return jsonify({
+        'success': True,
+        'pairingCode': pairing_code,
+        'examId': exam_state.get('exam_id'),
+        'expiresAt': datetime.fromtimestamp(
+            expires_at, timezone.utc
+        ).isoformat(),
+    })
+
+@app.route('/student/pairing/exchange', methods=['POST'])
+def exchange_student_pairing():
+    pairing_code = str((request.json or {}).get('pairingCode') or '').strip()
+    if not pairing_code or len(pairing_code) > 128:
+        return jsonify({
+            'success': False,
+            'message': 'Eşleştirme kodu geçersiz.'
+        }), 400
+
+    with student_pairings_lock:
+        cleanup_expired_pairings()
+        pairing = student_pairings.pop(pairing_code, None)
+
+    if not pairing:
+        return jsonify({
+            'success': False,
+            'message': 'Eşleştirme kodu geçersiz veya süresi dolmuş.'
+        }), 410
+    if (
+        not exam_state.get('active')
+        or pairing.get('examId') != exam_state.get('exam_id')
+    ):
+        return jsonify({
+            'success': False,
+            'message': 'Eşleştirme farklı bir sınava ait.'
+        }), 409
+
+    sid = pairing['sid']
+    student = students.get(sid)
+    if not student:
+        return jsonify({
+            'success': False,
+            'message': 'Öğrenci kaydı bulunamadı.'
+        }), 404
+
+    extension_token = secrets.token_urlsafe(32)
+    student_sessions[extension_token] = sid
+    persist_state()
+    return jsonify({
+        'success': True,
+        'sessionToken': extension_token,
+        'examId': exam_state.get('exam_id'),
+        'student': {
+            'id': sid,
+            'name': student.get('name', 'Bilinmiyor'),
+        },
     })
 
 # ─────────────────────────────────────────
@@ -808,6 +903,8 @@ def handle_start_exam(data):
         })
         students.clear()
         student_sessions.clear()
+        with student_pairings_lock:
+            student_pairings.clear()
         coding_vlm_votes.clear()
         persist_state()
     schedule_exam_stop()
