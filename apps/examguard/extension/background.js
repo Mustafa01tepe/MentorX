@@ -15,6 +15,7 @@ let examId       = null;
 let examMode    = 'web';
 let examStartedAt = null;
 let examDuration = null;
+let remoteExamActive = false;
 let lastUnfocusCaptureAt = 0;
 let lastSuccessfulScreenshot = null;
 let windowUnfocusTimer = null;
@@ -51,6 +52,29 @@ function ensureStateCheckAlarm() {
   chrome.alarms.create('stateCheck', {
     periodInMinutes: STATE_CHECK_INTERVAL_SECONDS / 60
   });
+}
+
+async function updateActionState() {
+  if (!backendConnected) {
+    await chrome.action.setBadgeText({ text: '!' });
+    await chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
+    await chrome.action.setTitle({ title: 'ExamGuard - Backend bağlantısı yok' });
+    return;
+  }
+  if (examActive && sessionToken) {
+    await chrome.action.setBadgeText({ text: 'ON' });
+    await chrome.action.setBadgeBackgroundColor({ color: '#16a34a' });
+    await chrome.action.setTitle({ title: 'ExamGuard - İzleme aktif' });
+    return;
+  }
+  if (remoteExamActive) {
+    await chrome.action.setBadgeText({ text: 'GİR' });
+    await chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+    await chrome.action.setTitle({ title: 'ExamGuard - Sınav aktif, öğrenci girişi gerekli' });
+    return;
+  }
+  await chrome.action.setBadgeText({ text: '' });
+  await chrome.action.setTitle({ title: 'ExamGuard - Sınav bekleniyor' });
 }
 
 function ensureExamAlarms() {
@@ -134,6 +158,7 @@ async function clearLocalSession() {
   await chrome.alarms.clear('heartbeat');
   await chrome.alarms.clear('examEnd');
   ensureStateCheckAlarm();
+  await updateActionState();
 }
 
 async function validateStudentSession(expectedExamId) {
@@ -192,6 +217,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       examId       = message.examId;
       examStartedAt = message.started_at || null;
       examDuration = message.duration ?? null;
+      remoteExamActive = true;
       await chrome.storage.local.set({
         examActive: true,
         studentInfo: message.student,
@@ -213,6 +239,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await activateContentGuards();
       await captureAndSend('periodic', 'Sınav girişi ilk kontrol');
       await enforceOpenTabs();
+      await updateActionState();
       return { success: true };
     })()
       .then(sendResponse)
@@ -233,7 +260,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({
       examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
       examStartedAt, examDuration,
-      backendConnected, lastSyncError
+      backendConnected, lastSyncError, remoteExamActive
     });
   }
 
@@ -241,13 +268,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     syncWithBackend().then(() => {
       sendResponse({
         examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
-        backendConnected, lastSyncError
+        backendConnected, lastSyncError, remoteExamActive
       });
     }).catch((error) => {
       sendResponse({
         examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
         backendConnected: false,
-        lastSyncError: error?.message || lastSyncError
+        lastSyncError: error?.message || lastSyncError,
+        remoteExamActive
       });
     });
   }
@@ -304,6 +332,7 @@ async function checkExamState() {
     const data = await res.json();
     backendConnected = true;
     lastSyncError = '';
+    remoteExamActive = !!data.active;
 
     // Backend'de aktif sınav yoksa local state'i netleştir
     if (!data.active) {
@@ -321,6 +350,7 @@ async function checkExamState() {
           });
         });
       }
+      await updateActionState();
       return;
     }
 
@@ -334,6 +364,7 @@ async function checkExamState() {
 
     if (examId && remoteExamId && examId !== remoteExamId) {
       await clearLocalSession();
+      await updateActionState();
       return;
     }
 
@@ -341,6 +372,7 @@ async function checkExamState() {
       const sessionValid = await validateStudentSession(remoteExamId);
       if (!sessionValid) {
         await clearLocalSession();
+        await updateActionState();
         return;
       }
     }
@@ -361,10 +393,12 @@ async function checkExamState() {
       captureAndSend('periodic', 'Oturum geri yüklendi');
       enforceOpenTabs();
     }
+    await updateActionState();
 
   } catch (e) {
     backendConnected = false;
     lastSyncError = e?.message || 'Backend bağlantısı kurulamadı.';
+    await updateActionState();
     console.error('[ExamGuard] State sync error:', e);
   }
 }

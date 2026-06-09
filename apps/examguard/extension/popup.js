@@ -6,10 +6,17 @@ const BACKEND_URL = 'https://monitoragent-production.up.railway.app';
 
 function updateSyncStatus(status) {
   const syncMsg = document.getElementById('syncMsg');
-  syncMsg.textContent = status?.backendConnected
-    ? 'Backend senkronize'
-    : (status?.lastSyncError || 'Backend bağlantısı yok');
-  syncMsg.className = status?.backendConnected ? 'sync-msg ok' : 'sync-msg error';
+  if (!status?.backendConnected) {
+    syncMsg.textContent = status?.lastSyncError || 'Backend bağlantısı yok';
+    syncMsg.className = 'sync-msg error';
+    return;
+  }
+  syncMsg.textContent = status?.examActive
+    ? 'Backend senkronize · İzleme aktif'
+    : status?.remoteExamActive
+      ? 'Backend senkronize · Öğrenci girişi bekleniyor'
+      : 'Backend senkronize · Sınav bekleniyor';
+  syncMsg.className = 'sync-msg ok';
 }
 
 function updateUI(state) {
