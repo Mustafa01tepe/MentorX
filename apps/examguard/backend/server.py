@@ -68,15 +68,27 @@ STATE_DB_PATH = os.environ.get(
     os.path.join(os.path.dirname(SCREENSHOTS_DIR), 'examguard_state.sqlite3')
 )
 DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
-state_store = create_state_store(
-    database_url=DATABASE_URL,
-    sqlite_path=STATE_DB_PATH,
-    connect_attempts=os.environ.get('DATABASE_CONNECT_ATTEMPTS', '8'),
-    retry_delay=os.environ.get('DATABASE_RETRY_DELAY_SECONDS', '2')
-)
+DATABASE_ERROR = ''
+try:
+    state_store = create_state_store(
+        database_url=DATABASE_URL,
+        sqlite_path=STATE_DB_PATH,
+        connect_attempts=os.environ.get('DATABASE_CONNECT_ATTEMPTS', '8'),
+        retry_delay=os.environ.get('DATABASE_RETRY_DELAY_SECONDS', '2')
+    )
+    DATABASE_BACKEND = 'postgresql' if DATABASE_URL else 'sqlite'
+except RuntimeError as exc:
+    DATABASE_ERROR = str(exc)
+    DATABASE_BACKEND = 'sqlite-fallback'
+    print(f'[ExamGuard] PostgreSQL kullanılamıyor, SQLite fallback: {exc}')
+    state_store = create_state_store(sqlite_path=STATE_DB_PATH)
 print(
     '[ExamGuard] Durum deposu: '
-    + ('PostgreSQL' if DATABASE_URL else f'SQLite ({STATE_DB_PATH})')
+    + (
+        'PostgreSQL'
+        if DATABASE_BACKEND == 'postgresql'
+        else f'SQLite ({STATE_DB_PATH})'
+    )
 )
 persisted_state = state_store.load()
 exam_state.update(persisted_state.get('exam_state') or {})
@@ -657,8 +669,9 @@ def get_state():
 @app.route('/health')
 def health():
     return jsonify({
-        'status': 'ok',
-        'database': 'postgresql' if DATABASE_URL else 'sqlite',
+        'status': 'degraded' if DATABASE_ERROR else 'ok',
+        'database': DATABASE_BACKEND,
+        'databaseError': DATABASE_ERROR or None,
         'adminTokenConfigured': bool(CONFIGURED_ADMIN_TOKEN),
         'visionConfigured': bool(GROQ_API_KEY),
         'visionModel': MODEL,
