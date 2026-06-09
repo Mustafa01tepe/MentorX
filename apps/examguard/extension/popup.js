@@ -120,8 +120,22 @@ document.getElementById('loginButton').addEventListener('click', async () => {
   }
 });
 
+updateSyncStatus({
+  backendConnected: false,
+  lastSyncError: 'Backend bağlanıyor...'
+});
+
 chrome.runtime.sendMessage({ type: 'SYNC_NOW' }, (status) => {
-  if (!chrome.runtime.lastError) updateSyncStatus(status);
+  if (chrome.runtime.lastError) {
+    updateUI(null);
+    updateSyncStatus({
+      backendConnected: false,
+      lastSyncError: chrome.runtime.lastError.message
+    });
+    return;
+  }
+
+  updateSyncStatus(status);
   fetch(`${BACKEND_URL}/state`)
     .then(r => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);

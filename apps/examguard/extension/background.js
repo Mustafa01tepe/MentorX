@@ -15,6 +15,7 @@ let examMode    = 'web';
 let lastUnfocusCaptureAt = 0;
 let backendConnected = false;
 let lastSyncError = '';
+let syncInProgress = null;
 
 const AI_EXTENSION_BLACKLIST = [
   { id: 'camppjleccjaphfdbohjdohecfnoikec', name: 'Merlin AI' },
@@ -123,6 +124,32 @@ async function validateStudentSession(expectedExamId) {
   );
 }
 
+async function syncWithBackend() {
+  if (syncInProgress) return syncInProgress;
+  syncInProgress = (async () => {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await checkExamState();
+        if (backendConnected) return true;
+      } catch (error) {
+        lastError = error;
+      }
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    if (lastError) throw lastError;
+    return false;
+  })();
+
+  try {
+    return await syncInProgress;
+  } finally {
+    syncInProgress = null;
+  }
+}
+
 // ─────────────────────────────────────────
 // MESAJ ALICI (popup'tan)
 // ─────────────────────────────────────────
@@ -178,10 +205,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'SYNC_NOW') {
-    checkExamState().then(() => {
+    syncWithBackend().then(() => {
       sendResponse({
         examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
         backendConnected, lastSyncError
+      });
+    }).catch((error) => {
+      sendResponse({
+        examActive, studentInfo, sessionToken, examId, examMode, allowedUrls,
+        backendConnected: false,
+        lastSyncError: error?.message || lastSyncError
       });
     });
   }
