@@ -16,6 +16,7 @@ let examMode    = 'web';
 let examStartedAt = null;
 let examDuration = null;
 let lastUnfocusCaptureAt = 0;
+let lastSuccessfulScreenshot = null;
 let windowUnfocusTimer = null;
 const pageUnfocusTimers = new Map();
 let backendConnected = false;
@@ -118,6 +119,7 @@ async function clearLocalSession() {
   examDuration = null;
   allowedUrls = [];
   lastUnfocusCaptureAt = 0;
+  lastSuccessfulScreenshot = null;
   clearWindowUnfocusTimer();
   clearPageUnfocusTimers();
   await chrome.storage.local.set({
@@ -583,9 +585,24 @@ async function captureAndSend(reason, details = '') {
     if (!activeTab) return;
 
     const targetWindowId = Number.isInteger(activeTab.windowId) ? activeTab.windowId : undefined;
-    const screenshot = await chrome.tabs.captureVisibleTab(targetWindowId, {
-      format: 'jpeg', quality: 75
-    });
+    let screenshot;
+    try {
+      screenshot = await chrome.tabs.captureVisibleTab(targetWindowId, {
+        format: 'jpeg', quality: 75
+      });
+      lastSuccessfulScreenshot = screenshot;
+    } catch (captureError) {
+      if (reason === 'window_unfocused' && lastSuccessfulScreenshot) {
+        screenshot = lastSuccessfulScreenshot;
+        details = [
+          details,
+          'Chrome küçültüldüğü için son başarılı sekme görüntüsü kullanıldı.'
+        ].filter(Boolean).join(' ');
+      } else {
+        await sendCaptureFailureAlert(reason, details, activeTab, captureError);
+        return;
+      }
+    }
 
     const response = await fetch(`${BACKEND_URL}/screenshot`, {
       method: 'POST',
@@ -614,6 +631,35 @@ async function captureAndSend(reason, details = '') {
     }
   } catch (err) {
     console.error('[ExamGuard] Capture error:', err);
+  }
+}
+
+async function sendCaptureFailureAlert(reason, details, activeTab, error) {
+  if (!sessionToken || !studentInfo) return;
+  try {
+    const response = await fetch(`${BACKEND_URL}/alert`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sessionToken}`
+      },
+      body: JSON.stringify({
+        type: reason,
+        reason,
+        details: [
+          details,
+          `Ekran görüntüsü alınamadı: ${error?.message || 'bilinmeyen hata'}`
+        ].filter(Boolean).join(' '),
+        student: studentInfo,
+        timestamp: new Date().toISOString(),
+        tabUrl: activeTab?.url || '',
+        tabTitle: activeTab?.title || ''
+      })
+    });
+    if (response.status === 401) await clearLocalSession();
+    if (!response.ok) throw new Error(`Alert HTTP ${response.status}`);
+  } catch (alertError) {
+    console.error('[ExamGuard] Capture failure alert error:', alertError);
   }
 }
 

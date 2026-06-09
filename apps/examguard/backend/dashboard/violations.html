@@ -154,7 +154,7 @@ async function showEvent(item,card){
       ${cell('ZAMAN',fmt(item.timestamp))}${cell('DURUM',item.analysisStatus||'—')}
       ${cell('MOD',item.mode||'—')}${cell('OLAY ID',item.eventId||'—')}
     </div>
-    <div class="reason">${esc(item.agentReason||item.routingNote||'Açıklama yok')}</div>
+    <div class="reason">${esc(item.agentReason||item.routingNote||item.details||'Açıklama yok')}</div>
     <div class="actions"><button class="primary" onclick="downloadEvent()">KANITI ZIP İNDİR</button></div>`;
   if(item.hasImage&&item.evidenceId){
     try{

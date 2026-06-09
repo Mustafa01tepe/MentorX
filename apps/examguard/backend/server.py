@@ -624,6 +624,7 @@ def receive_screenshot():
         'timestamp':   timestamp,
         'tabUrl':      tab_url,
         'tabTitle':    tab_title,
+        'details':     str(data.get('details') or '')[:1000],
         'screenshot':  screenshot,
         'filename':    filename,
         'mode':        mode,
@@ -743,6 +744,10 @@ def receive_alert():
     increase_alert_count(sid)
     payload = {
         'type': str(data.get('type') or 'client_alert')[:80],
+        'reason': str(data.get('reason') or data.get('type') or 'client_alert')[:80],
+        'details': str(data.get('details') or '')[:1000],
+        'tabUrl': str(data.get('tabUrl') or '')[:2000],
+        'tabTitle': str(data.get('tabTitle') or '')[:500],
         'student': student,
         'timestamp': data.get('timestamp') or now_iso(),
         'extensions': (data.get('extensions') or [])[:50],
@@ -753,7 +758,11 @@ def receive_alert():
         'mode': exam_state.get('mode'),
         'analysisStatus': data.get('analysisStatus') or 'suspicious',
         'agentVerdict': data.get('agentVerdict') or 'ŞÜPHELİ',
-        'agentReason': data.get('agentReason') or 'Kural tabanlı alarm.'
+        'agentReason': (
+            data.get('agentReason')
+            or data.get('details')
+            or 'Kural tabanlı alarm.'
+        )
     }
     try:
         state_store.save_evidence(

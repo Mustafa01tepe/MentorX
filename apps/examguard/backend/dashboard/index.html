@@ -662,6 +662,7 @@ async function showDetail(data, card) {
     <div class="meta-grid">${mc('ÖĞRENCİ',s.name||'—')}${mc('NUMARA',s.id||'—')}${mc('ZAMAN',fmtTime(data.timestamp))}${mc('DURUM',statusText(data.analysisStatus||'clean'))}${mc('OLAY',data.reasonLabel||data.reason||'—')}${mc('MOD',data.mode||'—')}</div>
     ${ctxSummary?`<div style="font-family:var(--mono);font-size:9px;color:var(--dim);max-width:760px;width:100%">BAĞLAM: ${esc(ctxSummary)}</div>`:''}
     ${data.routingNote?`<div style="font-family:var(--mono);font-size:9px;color:var(--muted);max-width:760px;width:100%">NOT: ${esc(data.routingNote)}</div>`:''}
+    ${data.details?`<div style="font-family:var(--mono);font-size:9px;color:var(--muted);max-width:760px;width:100%">DETAY: ${esc(data.details)}</div>`:''}
     ${data.tabUrl?`<div style="font-family:var(--mono);font-size:9px;color:var(--muted);max-width:760px;width:100%">URL: ${esc(data.tabUrl)}</div>`:''}
   `;
 }
