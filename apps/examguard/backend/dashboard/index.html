@@ -276,7 +276,7 @@ const countedEvents = new Set();
 let adminToken = localStorage.getItem('examguardAdminToken') || '';
 const socket = io({
   autoConnect: false,
-  auth: { adminToken }
+  auth: {}
 });
 
 function requestAdminToken(message = 'Öğretmen tokenını girin:') {
@@ -295,11 +295,13 @@ function requestAdminToken(message = 'Öğretmen tokenını girin:') {
   adminToken = nextToken;
   localStorage.setItem('examguardAdminToken', adminToken);
   adminAuthenticated = false;
-  socket.auth = { adminToken };
   updateAdminUi();
 
-  if (socket.connected) socket.disconnect();
-  socket.connect();
+  if (socket.connected) {
+    socket.emit('authenticate_admin', { adminToken });
+  } else {
+    socket.connect();
+  }
   return true;
 }
 
@@ -313,6 +315,9 @@ function updateAdminUi() {
 socket.on('connect', () => {
   document.getElementById('connBadge').textContent = '● BAĞLI';
   document.getElementById('connBadge').className = 'conn-badge on';
+  if (adminToken && !adminAuthenticated) {
+    socket.emit('authenticate_admin', { adminToken });
+  }
 });
 socket.on('disconnect', () => {
   document.getElementById('connBadge').textContent = '● YOK';

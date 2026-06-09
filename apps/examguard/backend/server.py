@@ -163,6 +163,32 @@ def require_admin_socket():
         return False
     return True
 
+def authenticate_admin_socket(supplied_token):
+    supplied_token = str(supplied_token or '').strip()
+    if supplied_token and secrets.compare_digest(supplied_token, ADMIN_TOKEN):
+        admin_sockets.add(request.sid)
+        join_room('admins')
+        socketio.emit('admin_authenticated', {}, to=request.sid)
+        socketio.emit('students_update', list(students.values()), to=request.sid)
+        print('[ExamGuard] Öğretmen yetkilendirildi')
+        return True
+
+    admin_sockets.discard(request.sid)
+    if supplied_token:
+        print(
+            '[ExamGuard] Öğretmen tokenı eşleşmedi '
+            f'(gelen uzunluk: {len(supplied_token)}, '
+            f'gelen parmak izi: {token_fingerprint(supplied_token)}, '
+            f'beklenen uzunluk: {len(ADMIN_TOKEN)}, '
+            f'beklenen parmak izi: {token_fingerprint(ADMIN_TOKEN)})'
+        )
+    socketio.emit(
+        'admin_error',
+        {'message': 'Öğretmen tokenı geçersiz.'},
+        to=request.sid
+    )
+    return False
+
 def safe_filename_part(value, fallback):
     cleaned = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value or ''))[:80]
     return cleaned or fallback
@@ -640,27 +666,14 @@ def serve_screenshot(filename):
 @socketio.on('connect')
 def on_connect(auth=None):
     supplied_token = str((auth or {}).get('adminToken', '') or '').strip()
-    if supplied_token and secrets.compare_digest(supplied_token, ADMIN_TOKEN):
-        admin_sockets.add(request.sid)
-        join_room('admins')
-        socketio.emit('admin_authenticated', {}, to=request.sid)
-    elif supplied_token:
-        print(
-            '[ExamGuard] Öğretmen tokenı eşleşmedi '
-            f'(gelen uzunluk: {len(supplied_token)}, '
-            f'gelen parmak izi: {token_fingerprint(supplied_token)}, '
-            f'beklenen uzunluk: {len(ADMIN_TOKEN)}, '
-            f'beklenen parmak izi: {token_fingerprint(ADMIN_TOKEN)})'
-        )
-        socketio.emit(
-            'admin_error',
-            {'message': 'Öğretmen tokenı geçersiz.'},
-            to=request.sid
-        )
+    if supplied_token:
+        authenticate_admin_socket(supplied_token)
     socketio.emit('state_sync', public_exam_state(), to=request.sid)
-    if request.sid in admin_sockets:
-        socketio.emit('students_update', list(students.values()), to=request.sid)
     print('[ExamGuard] İstemci bağlandı')
+
+@socketio.on('authenticate_admin')
+def handle_authenticate_admin(data):
+    authenticate_admin_socket((data or {}).get('adminToken', ''))
 
 @socketio.on('disconnect')
 def on_disconnect():
