@@ -351,7 +351,7 @@ function isAllowed(url) {
 
   // Hoca URL girmediyse Moodle domain'ine izin ver
   if (allowedUrls.length === 0) {
-    return current.hostname.includes('moodle.erzurum.edu.tr');
+    return current.hostname === 'moodle.erzurum.edu.tr';
   }
 
   // Hoca URL girdiyse bu iki URL (ve alt-path'leri) arasında gezinmeye izin ver.

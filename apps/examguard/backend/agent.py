@@ -13,7 +13,10 @@ except Exception:
 
 # ── Config ──
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
-MODEL        = 'llama-3.2-11b-vision-preview'
+MODEL        = os.environ.get(
+    'GROQ_MODEL',
+    'meta-llama/llama-4-scout-17b-16e-instruct'
+)
 GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
 
 # Periyodik SS'leri analiz etmek için kuyruk

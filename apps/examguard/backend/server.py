@@ -1,9 +1,6 @@
 # ExamGuard - server.py
 from dotenv import load_dotenv
 load_dotenv()
-# monkey_patch her şeyden önce gelmeli
-import eventlet
-eventlet.monkey_patch()
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, join_room
@@ -11,7 +8,7 @@ from flask_cors import CORS
 import base64, binascii, hashlib, os, re, secrets, threading, uuid
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from agent import analyze_async
+from agent import GROQ_API_KEY, MODEL, analyze_async
 from policy import record_coding_vote, resolve_student_session
 from state_store import create_state_store
 
@@ -24,8 +21,7 @@ CORS(app, resources={r"/*": {"origins": [
 ]}})
 socketio = SocketIO(
     app,
-    cors_allowed_origins=['http://localhost:5000', 'http://127.0.0.1:5000'],
-    async_mode='eventlet'
+    async_mode='threading'
 )
 
 SCREENSHOTS_DIR = os.environ.get('SCREENSHOTS_DIR', '/tmp/examguard_screenshots')
@@ -276,7 +272,9 @@ def start_analysis_timeout(event_id, payload, sid):
         }
         socketio.emit('screenshot', timeout_payload, to='admins')
 
-    eventlet.spawn_after(ANALYSIS_TIMEOUT_SECONDS, on_timeout)
+    timer = threading.Timer(ANALYSIS_TIMEOUT_SECONDS, on_timeout)
+    timer.daemon = True
+    timer.start()
 
 # ─────────────────────────────────────────
 # ÖĞRENCİ ENDPOINT'LERİ
@@ -656,6 +654,16 @@ def index():
 def get_state():
     return jsonify(public_exam_state())
 
+@app.route('/health')
+def health():
+    return jsonify({
+        'status': 'ok',
+        'database': 'postgresql' if DATABASE_URL else 'sqlite',
+        'adminTokenConfigured': bool(CONFIGURED_ADMIN_TOKEN),
+        'visionConfigured': bool(GROQ_API_KEY),
+        'visionModel': MODEL,
+    })
+
 @app.route('/screenshots/<path:filename>')
 def serve_screenshot(filename):
     supplied = get_bearer_token() or request.headers.get('X-Admin-Token', '')
@@ -683,7 +691,16 @@ if __name__ == '__main__':
     print('=' * 50)
     print('  ExamGuard Backend')
     print('  Dashboard → http://localhost:5000')
-    print(f'  Öğretmen tokenı → {ADMIN_TOKEN}')
+    print(
+        '  Öğretmen tokenı → '
+        + ('ortam değişkeninden yüklendi' if CONFIGURED_ADMIN_TOKEN else 'geçici üretildi')
+    )
     print('=' * 50)
     port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=port,
+        debug=False,
+        allow_unsafe_werkzeug=True
+    )

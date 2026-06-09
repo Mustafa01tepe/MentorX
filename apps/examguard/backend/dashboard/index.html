@@ -444,12 +444,10 @@ function startExam() {
     return;
   }
   socket.emit('start_exam', { mode, duration, allowed_urls, exam_code });
-  setExamRunning(true);
 }
 function stopExam() {
   if (!requireAdmin()) return;
   socket.emit('stop_exam', {});
-  setExamRunning(false);
 }
 function applyChanges() {
   if (!requireAdmin()) return;

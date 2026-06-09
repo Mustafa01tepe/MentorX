@@ -34,6 +34,7 @@ last_coding_ss    = 0
 chrome_was_active = False
 tray_icon         = None
 login_pending     = False   # giriş ekranı açık mı
+tray_lock         = threading.Lock()
 
 # SocketIO client
 sio = socketio.Client(reconnection=True, reconnection_delay=3)
@@ -151,9 +152,14 @@ def create_icon(color='gray'):
     return img
 
 def update_tray(color, tooltip):
-    if tray_icon:
-        tray_icon.icon  = create_icon(color)
-        tray_icon.title = tooltip
+    if not tray_icon:
+        return
+    try:
+        with tray_lock:
+            tray_icon.icon = create_icon(color)
+            tray_icon.title = tooltip
+    except OSError as e:
+        print(f'[Agent] Tray güncelleme hatası: {e}')
 
 def clear_student_session():
     global student_info, session_token, login_pending
@@ -291,12 +297,18 @@ def ensure_login_prompt():
         threading.Thread(target=open_login_screen, daemon=True).start()
 
 def connect_to_backend():
-    while True:
+    while running:
         try:
-            sio.connect(BACKEND_URL)
-            sio.wait()
+            if not sio.connected:
+                sio.connect(
+                    BACKEND_URL,
+                    wait_timeout=15
+                )
+            while running and sio.connected:
+                time.sleep(1)
         except Exception as e:
             print(f'[Agent] Bağlantı hatası: {e}')
+        if running:
             time.sleep(5)
 
 # ─────────────────────────────────────────
@@ -365,6 +377,8 @@ def monitoring_loop():
 def on_quit(icon, item):
     global running
     running = False
+    if sio.connected:
+        sio.disconnect()
     icon.stop()
 
 def setup_tray():

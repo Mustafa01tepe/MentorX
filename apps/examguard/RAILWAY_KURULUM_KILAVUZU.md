@@ -63,7 +63,7 @@ Gerçek `.env` dosyasını veya API anahtarlarını GitHub'a göndermeyin.
 Backend klasöründeki `railway.toml` şu başlatma komutunu kullanır:
 
 ```text
-gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT server:app
+gunicorn -w 1 --threads 50 --bind 0.0.0.0:$PORT server:app
 ```
 
 Tek worker kullanılması önemlidir. ExamGuard'ın Socket.IO ve bellek içi canlı
@@ -104,6 +104,7 @@ DATABASE_RETRY_DELAY_SECONDS=2
 SECRET_KEY=GUCLU_RASTGELE_DEGER
 ADMIN_TOKEN=GUCLU_OGRETMEN_TOKENI
 GROQ_API_KEY=GROQ_ANAHTARINIZ
+GROQ_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
 MAX_SCREENSHOT_BYTES=5242880
 MAX_REQUEST_BYTES=8388608
 MAX_CONCURRENT_ANALYSES=3
@@ -112,8 +113,8 @@ RAILPACK_PYTHON_VERSION=3.12
 
 Railway `PORT` değişkenini kendisi sağlar. Elle tanımlamayın.
 
-`RAILPACK_PYTHON_VERSION=3.12`, Eventlet ve Flask-Socket.IO için Python
-3.13 kaynaklı çalışma zamanı sorunlarını önlemek amacıyla kullanılır.
+`RAILPACK_PYTHON_VERSION=3.12`, Python bağımlılıklarının üretim ve yerel
+ortamda aynı ana sürümle çalışmasını sağlar.
 
 PowerShell ile güçlü değerler üretmek için:
 
@@ -185,6 +186,16 @@ Başlangıçta buna benzer bir JSON yanıtı gelmelidir:
 ```
 
 `exam_code` güvenlik nedeniyle bu yanıtta gösterilmez.
+
+Servis yapılandırmasını anahtarları göstermeden kontrol etmek için `/health`
+adresini açabilirsiniz:
+
+```text
+https://examguard-production.up.railway.app/health
+```
+
+`database` değeri `postgresql`, `adminTokenConfigured` ve
+`visionConfigured` değerleri `true` olmalıdır.
 
 ## 10. Masaüstü Ajanını Railway'e Bağlama
 

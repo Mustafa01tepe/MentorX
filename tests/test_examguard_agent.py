@@ -1,5 +1,6 @@
 import sys
 import unittest
+import os
 from pathlib import Path
 
 
@@ -8,10 +9,17 @@ BACKEND_DIR = (
 )
 sys.path.insert(0, str(BACKEND_DIR))
 
-from agent import _parse_response
+from agent import MODEL, _parse_response
 
 
 class AgentResponseTests(unittest.TestCase):
+    def test_default_model_is_not_retired_llama_32_vision(self):
+        if "GROQ_MODEL" not in os.environ:
+            self.assertEqual(
+                MODEL,
+                "meta-llama/llama-4-scout-17b-16e-instruct",
+            )
+
     def test_parses_suspicious_response(self):
         result = _parse_response(
             "KARAR: ŞÜPHELİ\nGEREKÇE: Ekranda bir yapay zeka aracı açık."
